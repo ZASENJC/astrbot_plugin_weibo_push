@@ -10,7 +10,7 @@ from astrbot.api import logger
 from bs4 import BeautifulSoup
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.4.14", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.5.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -368,19 +368,33 @@ class WeiboMonitor(Star):
 
             # 遍历所有有效的微博，找出所有新的
             # 列表是从新到旧排列的
+            filter_keywords = self.config.get("filter_keywords", [])
+            
             for mblog in valid_mblogs:
                 current_id = int(mblog["id"])
+                text = self.clean_text(mblog.get("text", ""))
                 
+                # 屏蔽词过滤
+                has_filter_keyword = False
+                for keyword in filter_keywords:
+                    if keyword and keyword in text:
+                        has_filter_keyword = True
+                        logger.info(f"WeiboMonitor: 微博 {current_id} 包含屏蔽词 '{keyword}'，已跳过推送")
+                        break
+                if has_filter_keyword:
+                    # 如果是强制获取模式，即便有屏蔽词我们也不应该返回它
+                    if force_fetch:
+                        break
+                    continue
+
                 if force_fetch:
                     # 强制模式只取第一条
-                    text = self.clean_text(mblog.get("text", ""))
                     bid = mblog.get("bid")
                     link = f"https://weibo.com/{uid}/{bid}"
                     new_posts.append({"text": text, "link": link, "username": username})
                     break
                 
                 if current_id > last_id:
-                    text = self.clean_text(mblog.get("text", ""))
                     bid = mblog.get("bid")
                     link = f"https://weibo.com/{uid}/{bid}"
                     new_posts.append({"text": text, "link": link, "username": username})

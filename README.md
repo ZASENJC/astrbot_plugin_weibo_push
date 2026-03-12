@@ -54,7 +54,8 @@
 - `/get_umo`: 获取当前会话 ID（用于配置推送目标）。
 - `/weibo_verify`: 验证当前设置的 Cookie 是否有效。
 - `/weibo_check`: 立即抓取并推送最新一条微博（用于测试配置）。
-
+- `/weibo_export`: 将当前插件的所有配置导出为 Base64 字符串。
+- `/weibo_import [配置字符串]`: 使用导出的配置字符串快速恢复或迁移配置。
 ## 如何获取微博 Cookie
 
 1. 在电脑浏览器打开 [微博移动端官网](https://m.weibo.cn/) 并登录。

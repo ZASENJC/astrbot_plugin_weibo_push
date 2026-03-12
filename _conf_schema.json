@@ -1,0 +1,39 @@
+{
+  "weibo_urls": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "微博用户主页链接",
+    "hint": "可以填写多个，例如: https://weibo.com/u/1234567890"
+  },
+  "check_interval": {
+    "type": "int",
+    "default": 10,
+    "description": "检查间隔（分钟）"
+  },
+  "request_interval": {
+    "type": "int",
+    "default": 5,
+    "description": "账号请求间隔（秒）",
+    "hint": "多个账号间抓取的间隔时间，避免请求过快被拦截"
+  },
+  "target_conversation_id": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "推送目标会话 ID",
+    "hint": "可以填写多个。通过指令 /get_umo 获取当前会话 ID"
+  },
+  "weibo_cookie": {
+    "type": "string",
+    "default": "",
+    "description": "微博 Cookie (可选)",
+    "hint": "如果频繁抓取失败，请在设置中填入微博移动端 Cookie"
+  },
+  "message_format": {
+    "type": "string",
+    "default": "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}",
+    "description": "推送消息格式",
+    "hint": "支持变量: {name} (用户名), {weibo} (内容), {link} (链接)"
+  }
+}

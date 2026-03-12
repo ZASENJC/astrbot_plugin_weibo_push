@@ -5,12 +5,12 @@ import os
 import json
 from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
 from bs4 import BeautifulSoup
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.4.8", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.4.10", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -20,21 +20,25 @@ class WeiboMonitor(Star):
         self.running = True
 
         # 确保数据目录存在
-        self.data_dir = os.path.join("data", "astrbot_plugin_weibo_monitor")
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir, exist_ok=True)
-        self.data_file = os.path.join(self.data_dir, "monitor_data.json")
+        self.data_dir = StarTools.get_data_dir()
+        if not self.data_dir.exists():
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_file = self.data_dir / "monitor_data.json"
         self._data = self._load_data()
 
-        # 启动后台监控任务
+    @filter.on_astrbot_loaded()
+    async def on_loaded(self):
+        """当机器人加载完成后启动后台监控任务"""
+        # 如果已经存在任务（例如热重载），先取消
+        if self.monitor_task:
+            self.monitor_task.cancel()
         self.monitor_task = asyncio.create_task(self.run_monitor())
 
     def _load_data(self) -> dict:
         """从文件加载持久化数据"""
-        if os.path.exists(self.data_file):
+        if self.data_file.exists():
             try:
-                with open(self.data_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return json.loads(self.data_file.read_text(encoding="utf-8"))
             except Exception as e:
                 logger.error(f"WeiboMonitor: 加载数据文件失败: {e}")
         return {}
@@ -42,8 +46,10 @@ class WeiboMonitor(Star):
     def _save_data(self):
         """将持久化数据保存到文件"""
         try:
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=4)
+            self.data_file.write_text(
+                json.dumps(self._data, ensure_ascii=False, indent=4), 
+                encoding="utf-8"
+            )
         except Exception as e:
             logger.error(f"WeiboMonitor: 保存数据文件失败: {e}")
 
@@ -213,27 +219,30 @@ class WeiboMonitor(Star):
                     logger.debug("WeiboMonitor: 未配置推送目标会话 ID")
                 else:
                     for i, url in enumerate(urls):
-                        if i > 0:
-                            await asyncio.sleep(req_interval)
+                        try:
+                            if i > 0:
+                                await asyncio.sleep(req_interval)
 
-                        uid = await self.parse_uid(url)
-                        if not uid:
-                            continue
+                            uid = await self.parse_uid(url)
+                            if not uid:
+                                continue
 
-                        new_posts = await self.check_weibo(uid)
-                        if new_posts:
-                            for post in new_posts:
-                                content = msg_format.format(
-                                    name=post.get("username", "未知用户"),
-                                    weibo=post["text"],
-                                    link=post["link"],
-                                )
-                                chain = MessageChain().message(content)
-                                for target in targets:
-                                    await self.context.send_message(target, chain)
-                                logger.info(
-                                    f"WeiboMonitor: 已向 {len(targets)} 个目标推送 {post.get('username')} 的更新"
-                                )
+                            new_posts = await self.check_weibo(uid)
+                            if new_posts:
+                                for post in new_posts:
+                                    content = msg_format.format(
+                                        name=post.get("username", "未知用户"),
+                                        weibo=post["text"],
+                                        link=post["link"],
+                                    )
+                                    chain = MessageChain().message(content)
+                                    for target in targets:
+                                        await self.context.send_message(target, chain)
+                                    logger.info(
+                                        f"WeiboMonitor: 已向 {len(targets)} 个目标推送 {post.get('username')} 的更新"
+                                    )
+                        except Exception as e:
+                            logger.error(f"WeiboMonitor: 检查 URL {url} 时出错: {e}")
 
                 await asyncio.sleep(max(1, interval) * 60)
             except asyncio.CancelledError:
@@ -357,6 +366,8 @@ class WeiboMonitor(Star):
         """清理微博正文中的 HTML 标签并处理换行"""
         if not text:
             return ""
+        if not isinstance(text, str):
+            return str(text)
         try:
             soup = BeautifulSoup(text, "html.parser")
             # 将 <br> 标签替换为换行符

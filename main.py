@@ -3,6 +3,7 @@ import re
 import httpx
 import os
 import json
+import base64
 from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register, StarTools
@@ -10,7 +11,7 @@ from astrbot.api import logger
 from bs4 import BeautifulSoup
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.5.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.6.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -110,6 +111,60 @@ class WeiboMonitor(Star):
             f"当前会话 ID: {event.unified_msg_origin}\n请将此 ID 填入插件设置中的 target_conversation_id 项。"
         )
 
+    @filter.command("weibo_export")
+    async def weibo_export(self, event: AstrMessageEvent):
+        """导出当前插件配置"""
+        try:
+            config_json = json.dumps(self.config, ensure_ascii=False)
+            config_b64 = base64.b64encode(config_json.encode("utf-8")).decode("utf-8")
+            yield event.plain_result(
+                f"📦 WeiboMonitor 配置导出成功 (Base64格式):\n\n{config_b64}\n\n"
+                f"💡 请妥善保管此字符串，在其他会话或环境中使用 /weibo_import [配置字符串] 即可导入。"
+            )
+        except Exception as e:
+            logger.error(f"WeiboMonitor: 导出配置失败: {e}")
+            yield event.plain_result(f"❌ 导出配置失败: {e}")
+
+    @filter.command("weibo_import")
+    async def weibo_import(self, event: AstrMessageEvent, config_str: str = ""):
+        """从导出的字符串导入配置"""
+        if not config_str:
+            yield event.plain_result("❌ 请提供配置字符串。用法: /weibo_import <配置字符串>")
+            return
+
+        try:
+            # 兼容直接 JSON 或 Base64
+            try:
+                decoded = base64.b64decode(config_str).decode("utf-8")
+                new_config = json.loads(decoded)
+            except Exception:
+                new_config = json.loads(config_str)
+
+            if not isinstance(new_config, dict):
+                raise ValueError("配置格式不正确")
+
+            # 兼容性合并：保持当前版本已有的键，仅更新导入的键
+            # 即使未来增加了更多配置项，此导入逻辑依然稳健
+            count = 0
+            for key, value in new_config.items():
+                self.config[key] = value
+                count += 1
+
+            # 尝试调用框架的配置保存接口（如果支持）
+            try:
+                if hasattr(self.context, "config_manager") and hasattr(self.context.config_manager, "save_config"):
+                    self.context.config_manager.save_config()
+            except:
+                pass
+
+            yield event.plain_result(
+                f"✅ 成功导入 {count} 项配置！\n"
+                f"注意：部分配置（如检查间隔）可能需要重启插件后才能完全生效。"
+            )
+        except Exception as e:
+            logger.error(f"WeiboMonitor: 导入配置失败: {e}")
+            yield event.plain_result(f"❌ 导入配置失败: {e}")
+
     @filter.command("weibo_verify")
     async def weibo_verify(self, event: AstrMessageEvent):
         """验证当前配置的 Cookie 是否有效"""
@@ -125,7 +180,7 @@ class WeiboMonitor(Star):
             )
             if resp.status_code == 200:
                 data = resp.json()
-                data_obj = data.get("data", {})
+                data_obj = data.get("data") or {}
                 if data_obj.get("login"):
                     user = data_obj.get("user")
                     if user:
@@ -157,9 +212,7 @@ class WeiboMonitor(Star):
             urls = urls_raw
 
         targets = self.get_targets()
-        msg_format = self.config.get(
-            "message_format", "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}"
-        ).replace("\\n", "\n")
+        msg_format = self.message_format
         req_interval = self.config.get("request_interval", 5)
 
         if not urls:
@@ -202,6 +255,13 @@ class WeiboMonitor(Star):
 
         yield event.plain_result("\n".join(results))
 
+    @property
+    def message_format(self) -> str:
+        """获取并格式化消息模板"""
+        return self.config.get(
+            "message_format", "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}"
+        ).replace("\\n", "\n")
+
     async def run_monitor(self):
         logger.info("微博监控任务已启动")
         await asyncio.sleep(10)
@@ -217,9 +277,7 @@ class WeiboMonitor(Star):
                 interval = self.config.get("check_interval", 10)
                 req_interval = self.config.get("request_interval", 5)
                 targets = self.get_targets()
-                msg_format = self.config.get(
-                    "message_format", "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}"
-                ).replace("\\n", "\n")
+                msg_format = self.message_format
 
                 if not urls:
                     logger.debug("WeiboMonitor: 未配置监控 URL")
@@ -297,6 +355,45 @@ class WeiboMonitor(Star):
                 logger.error(f"WeiboMonitor: 解析用户名 {name} 失败: {e}")
         return None
 
+    async def _fetch_weibo_cards(self, uid: str) -> List[dict]:
+        """获取指定 UID 的微博卡片列表"""
+        api_url = f"https://m.weibo.cn/api/container/getIndex?type=uid&value={uid}&containerid=107603{uid}"
+        try:
+            resp = await self.client.get(api_url, headers=self.get_headers(uid))
+            if resp.status_code != 200:
+                logger.error(f"WeiboMonitor: 接口请求失败 (状态码 {resp.status_code}), UID: {uid}")
+                return []
+            data = resp.json()
+            if data.get("ok") != 1:
+                logger.debug(f"WeiboMonitor: 接口返回数据状态异常, UID: {uid}")
+                return []
+            return (data.get("data") or {}).get("cards", [])
+        except Exception as e:
+            logger.error(f"WeiboMonitor: 获取 UID {uid} 数据时出错: {e}")
+            return []
+
+    def _extract_valid_mblogs(self, cards: List[dict]) -> tuple[List[dict], str]:
+        """从卡片列表中提取有效的微博博文，并过滤置顶"""
+        valid_mblogs = []
+        username = "未知用户"
+        for card in cards:
+            if card.get("card_type") == 9 and card.get("mblog"):
+                mblog = card["mblog"]
+                # 极其严格的置顶过滤
+                is_top = (
+                    mblog.get("isTop") or 
+                    mblog.get("is_top") or 
+                    card.get("is_top") or 
+                    mblog.get("top") or
+                    (mblog.get("title") or {}).get("text") == "置顶"
+                )
+                if is_top:
+                    continue
+                valid_mblogs.append(mblog)
+                if username == "未知用户":
+                    username = (mblog.get("user") or {}).get("screen_name", "未知用户")
+        return valid_mblogs, username
+
     async def check_weibo(self, uid: str, force_fetch: bool = False) -> List[dict]:
         """
         检查指定 UID 的最新微博。
@@ -304,116 +401,78 @@ class WeiboMonitor(Star):
         :param force_fetch: 是否强制获取最新一条（不比较 last_id）
         :return: 包含新微博信息的列表
         """
-        api_url = f"https://m.weibo.cn/api/container/getIndex?type=uid&value={uid}&containerid=107603{uid}"
-        try:
-            resp = await self.client.get(api_url, headers=self.get_headers(uid))
-            if resp.status_code != 200:
-                logger.error(
-                    f"WeiboMonitor: 接口请求失败 (状态码 {resp.status_code}), UID: {uid}"
-                )
-                return []
+        cards = await self._fetch_weibo_cards(uid)
+        if not cards:
+            return []
 
-            data = resp.json()
-            if data.get("ok") != 1:
-                logger.debug(f"WeiboMonitor: 接口返回数据状态异常, UID: {uid}")
-                return []
+        valid_mblogs, username = self._extract_valid_mblogs(cards)
+        if not valid_mblogs:
+            return []
 
-            cards = data.get("data", {}).get("cards", [])
-            new_posts = []
+        # 获取上次记录的微博 ID
+        last_id_key = f"last_id_{uid}"
+        last_id_str = await self.get_kv_data(last_id_key, "0")
+        last_id = int(last_id_str)
 
-            # 获取上次记录的微博 ID
-            last_id_key = f"last_id_{uid}"
-            last_id_str = await self.get_kv_data(last_id_key, "0")
-            last_id = int(last_id_str)
-
-            valid_mblogs = []
-            username = "未知用户"
-            for card in cards:
-                # card_type 9 为微博博文
-                if card.get("card_type") == 9 and "mblog" in card:
-                    mblog = card["mblog"]
-                    
-                    # 极其严格的置顶过滤
-                    is_top = (
-                        mblog.get("isTop") or 
-                        mblog.get("is_top") or 
-                        card.get("is_top") or 
-                        mblog.get("top") or
-                        mblog.get("title", {}).get("text") == "置顶"
-                    )
-                    if is_top:
-                        continue
-                        
-                    valid_mblogs.append(mblog)
-                    if username == "未知用户":
-                        username = mblog.get("user", {}).get("screen_name", "未知用户")
-
-            if not valid_mblogs:
-                return []
-
-            # 1. 如果是全新监控（last_id == 0）或者是本会话的首次检查（且非强制触发）
-            # 我们只同步最新 ID 而不推送，避免启动或重载时的“消息轰炸”
-            if not force_fetch and (last_id == 0 or uid not in self.session_initialized_uids):
-                latest_id = int(valid_mblogs[0]["id"])
+        # 1. 初始化检查：如果是全新监控或会话首次检查（非强制触发）
+        if not force_fetch and (last_id == 0 or uid not in self.session_initialized_uids):
+            latest_id_val = valid_mblogs[0].get("id")
+            if latest_id_val:
+                latest_id = int(latest_id_val)
                 await self.put_kv_data(last_id_key, str(latest_id))
                 self.session_initialized_uids.add(uid)
                 if last_id == 0:
                     logger.info(f"WeiboMonitor: 已初始化全新监控 UID {uid} ({username})，起始 ID: {latest_id}")
                 else:
                     logger.info(f"WeiboMonitor: 已同步会话初始状态，UID {uid} ({username})，当前最新 ID: {latest_id}")
-                return []
-            
-            # 标记该 UID 已在本会话中完成过初始化/同步
-            self.session_initialized_uids.add(uid)
-
-            # 遍历所有有效的微博，找出所有新的
-            # 列表是从新到旧排列的
-            filter_keywords = self.config.get("filter_keywords", [])
-            
-            for mblog in valid_mblogs:
-                current_id = int(mblog["id"])
-                text = self.clean_text(mblog.get("text", ""))
-                
-                # 屏蔽词过滤
-                has_filter_keyword = False
-                for keyword in filter_keywords:
-                    if keyword and keyword in text:
-                        has_filter_keyword = True
-                        logger.info(f"WeiboMonitor: 微博 {current_id} 包含屏蔽词 '{keyword}'，已跳过推送")
-                        break
-                if has_filter_keyword:
-                    # 如果是强制获取模式，即便有屏蔽词我们也不应该返回它
-                    if force_fetch:
-                        break
-                    continue
-
-                if force_fetch:
-                    # 强制模式只取第一条
-                    bid = mblog.get("bid")
-                    link = f"https://weibo.com/{uid}/{bid}"
-                    new_posts.append({"text": text, "link": link, "username": username})
-                    break
-                
-                if current_id > last_id:
-                    bid = mblog.get("bid")
-                    link = f"https://weibo.com/{uid}/{bid}"
-                    new_posts.append({"text": text, "link": link, "username": username})
-                else:
-                    # 因为是从新到旧，一旦遇到不大于 last_id 的，后面的肯定也不大于
-                    break
-
-            if new_posts:
-                # 更新 last_id 为这一批中最全/最新的 ID (即 valid_mblogs[0])
-                if not force_fetch:
-                    await self.put_kv_data(last_id_key, str(valid_mblogs[0]["id"]))
-                
-                # 反转列表，确保按时间顺序（旧到新）推送
-                new_posts.reverse()
-
-            return new_posts
-        except Exception as e:
-            logger.error(f"WeiboMonitor: 检查 UID {uid} 时出错: {e}")
             return []
+        
+        self.session_initialized_uids.add(uid)
+
+        # 2. 遍历微博，找出新帖
+        new_posts = []
+        filter_keywords = self.config.get("filter_keywords", [])
+        
+        for mblog in valid_mblogs:
+            current_id_val = mblog.get("id")
+            if not current_id_val:
+                continue
+            current_id = int(current_id_val)
+            
+            # 停止条件：如果已经检查到旧帖
+            if not force_fetch and current_id <= last_id:
+                break
+
+            text = self.clean_text(mblog.get("text", ""))
+            
+            # 屏蔽词过滤
+            has_filter_keyword = False
+            for keyword in filter_keywords:
+                if keyword and keyword in text:
+                    has_filter_keyword = True
+                    logger.info(f"WeiboMonitor: 微博 {current_id} 包含屏蔽词 '{keyword}'，已跳过推送")
+                    break
+            
+            if not has_filter_keyword:
+                bid = mblog.get("bid")
+                link = f"https://weibo.com/{uid}/{bid}"
+                new_posts.append({"text": text, "link": link, "username": username})
+
+            if force_fetch: # 强制获取模式只取第一条（不论是否被过滤，但如果有屏蔽词会变空）
+                break
+
+        # 3. 更新状态：无论 new_posts 是否为空，只要有更新的 valid_mblogs[0]，就应当更新 last_id
+        if not force_fetch:
+            latest_id_val = valid_mblogs[0].get("id")
+            if latest_id_val:
+                latest_id = int(latest_id_val)
+                if latest_id > last_id:
+                    await self.put_kv_data(last_id_key, str(latest_id))
+
+        if new_posts:
+            new_posts.reverse() # 旧到新排列
+
+        return new_posts
 
     def clean_text(self, text: str) -> str:
         """清理微博正文中的 HTML 标签并处理换行"""

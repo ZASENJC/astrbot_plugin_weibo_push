@@ -11,7 +11,7 @@ from astrbot.api import logger
 from bs4 import BeautifulSoup
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.6.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.6.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -372,7 +372,7 @@ class WeiboMonitor(Star):
             logger.error(f"WeiboMonitor: 获取 UID {uid} 数据时出错: {e}")
             return []
 
-    def _extract_valid_mblogs(self, cards: List[dict]) -> tuple[List[dict], str]:
+    def _extract_valid_mblogs(self, cards: List[dict]) -> tuple:
         """从卡片列表中提取有效的微博博文，并过滤置顶"""
         valid_mblogs = []
         username = "未知用户"
@@ -401,78 +401,82 @@ class WeiboMonitor(Star):
         :param force_fetch: 是否强制获取最新一条（不比较 last_id）
         :return: 包含新微博信息的列表
         """
-        cards = await self._fetch_weibo_cards(uid)
-        if not cards:
-            return []
+        try:
+            cards = await self._fetch_weibo_cards(uid)
+            if not cards:
+                return []
 
-        valid_mblogs, username = self._extract_valid_mblogs(cards)
-        if not valid_mblogs:
-            return []
+            valid_mblogs, username = self._extract_valid_mblogs(cards)
+            if not valid_mblogs:
+                return []
 
-        # 获取上次记录的微博 ID
-        last_id_key = f"last_id_{uid}"
-        last_id_str = await self.get_kv_data(last_id_key, "0")
-        last_id = int(last_id_str)
+            # 获取上次记录的微博 ID
+            last_id_key = f"last_id_{uid}"
+            last_id_str = await self.get_kv_data(last_id_key, "0")
+            last_id = int(last_id_str)
 
-        # 1. 初始化检查：如果是全新监控或会话首次检查（非强制触发）
-        if not force_fetch and (last_id == 0 or uid not in self.session_initialized_uids):
-            latest_id_val = valid_mblogs[0].get("id")
-            if latest_id_val:
-                latest_id = int(latest_id_val)
-                await self.put_kv_data(last_id_key, str(latest_id))
-                self.session_initialized_uids.add(uid)
-                if last_id == 0:
-                    logger.info(f"WeiboMonitor: 已初始化全新监控 UID {uid} ({username})，起始 ID: {latest_id}")
-                else:
-                    logger.info(f"WeiboMonitor: 已同步会话初始状态，UID {uid} ({username})，当前最新 ID: {latest_id}")
-            return []
-        
-        self.session_initialized_uids.add(uid)
-
-        # 2. 遍历微博，找出新帖
-        new_posts = []
-        filter_keywords = self.config.get("filter_keywords", [])
-        
-        for mblog in valid_mblogs:
-            current_id_val = mblog.get("id")
-            if not current_id_val:
-                continue
-            current_id = int(current_id_val)
-            
-            # 停止条件：如果已经检查到旧帖
-            if not force_fetch and current_id <= last_id:
-                break
-
-            text = self.clean_text(mblog.get("text", ""))
-            
-            # 屏蔽词过滤
-            has_filter_keyword = False
-            for keyword in filter_keywords:
-                if keyword and keyword in text:
-                    has_filter_keyword = True
-                    logger.info(f"WeiboMonitor: 微博 {current_id} 包含屏蔽词 '{keyword}'，已跳过推送")
-                    break
-            
-            if not has_filter_keyword:
-                bid = mblog.get("bid")
-                link = f"https://weibo.com/{uid}/{bid}"
-                new_posts.append({"text": text, "link": link, "username": username})
-
-            if force_fetch: # 强制获取模式只取第一条（不论是否被过滤，但如果有屏蔽词会变空）
-                break
-
-        # 3. 更新状态：无论 new_posts 是否为空，只要有更新的 valid_mblogs[0]，就应当更新 last_id
-        if not force_fetch:
-            latest_id_val = valid_mblogs[0].get("id")
-            if latest_id_val:
-                latest_id = int(latest_id_val)
-                if latest_id > last_id:
+            # 1. 初始化检查：如果是全新监控或会话首次检查（非强制触发）
+            if not force_fetch and (last_id == 0 or uid not in self.session_initialized_uids):
+                latest_id_val = valid_mblogs[0].get("id")
+                if latest_id_val:
+                    latest_id = int(latest_id_val)
                     await self.put_kv_data(last_id_key, str(latest_id))
+                    self.session_initialized_uids.add(uid)
+                    if last_id == 0:
+                        logger.info(f"WeiboMonitor: 已初始化全新监控 UID {uid} ({username})，起始 ID: {latest_id}")
+                    else:
+                        logger.info(f"WeiboMonitor: 已同步会话初始状态，UID {uid} ({username})，当前最新 ID: {latest_id}")
+                return []
+            
+            self.session_initialized_uids.add(uid)
 
-        if new_posts:
-            new_posts.reverse() # 旧到新排列
+            # 2. 遍历微博，找出新帖
+            new_posts = []
+            filter_keywords = self.config.get("filter_keywords", [])
+            
+            for mblog in valid_mblogs:
+                current_id_val = mblog.get("id")
+                if not current_id_val:
+                    continue
+                current_id = int(current_id_val)
+                
+                # 停止条件：如果已经检查到旧帖
+                if not force_fetch and current_id <= last_id:
+                    break
 
-        return new_posts
+                text = self.clean_text(mblog.get("text", ""))
+                
+                # 屏蔽词过滤
+                has_filter_keyword = False
+                for keyword in filter_keywords:
+                    if keyword and keyword in text:
+                        has_filter_keyword = True
+                        logger.info(f"WeiboMonitor: 微博 {current_id} 包含屏蔽词 '{keyword}'，已跳过推送")
+                        break
+                
+                if not has_filter_keyword:
+                    bid = mblog.get("bid")
+                    link = f"https://weibo.com/{uid}/{bid}"
+                    new_posts.append({"text": text, "link": link, "username": username})
+
+                if force_fetch: # 强制获取模式只取第一条（不论是否被过滤，但如果有屏蔽词会变空）
+                    break
+
+            # 3. 更新状态：无论 new_posts 是否为空，只要有更新的 valid_mblogs[0]，就应当更新 last_id
+            if not force_fetch:
+                latest_id_val = valid_mblogs[0].get("id")
+                if latest_id_val:
+                    latest_id = int(latest_id_val)
+                    if latest_id > last_id:
+                        await self.put_kv_data(last_id_key, str(latest_id))
+
+            if new_posts:
+                new_posts.reverse() # 旧到新排列
+
+            return new_posts
+        except Exception as e:
+            logger.error(f"WeiboMonitor: 检查 UID {uid} 时出错: {e}")
+            return []
 
     def clean_text(self, text: str) -> str:
         """清理微博正文中的 HTML 标签并处理换行"""
@@ -481,10 +485,21 @@ class WeiboMonitor(Star):
         if not isinstance(text, str):
             return str(text)
         try:
+            # 移除 "全文" 链接，防止出现在正文中
+            text = re.sub(r'<a[^>]*>全文</a>', '', text)
+            
             soup = BeautifulSoup(text, "html.parser")
+            
+            # 处理图片表情，将 <img> 替换为其 alt 文本 (如 [二哈])
+            for img in soup.find_all("img"):
+                alt = img.get("alt", "")
+                if alt:
+                    img.replace_with(alt)
+                    
             # 将 <br> 标签替换为换行符
             for br in soup.find_all("br"):
                 br.replace_with("\n")
+                
             return soup.get_text().strip()
         except Exception as e:
             logger.error(f"WeiboMonitor: 清理文本内容失败: {e}")

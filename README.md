@@ -12,17 +12,14 @@
 
 ## 部署步骤
 
-1. **准备插件文件**：
-   将插件文件夹（包含 `main.py`, `metadata.yaml`, `requirements.txt` 等）上传到服务器的 `data/plugins/` 目录下。
-   **注意**：不要上传 `.venv` 文件夹和 `__pycache__` 文件夹，它们是本地生成的环境文件。
-
-2. **安装依赖**：
+1. **安装**：
+   在 AstrBot 插件市场安装本插件。
    插件会自动安装 `requirements.txt` 中的依赖。如果手动安装，请在服务器环境下运行：
    ```bash
    pip install httpx beautifulsoup4
    ```
 
-3. **获取会话 ID (unified_msg_origin)**：
+2. **获取会话 ID (unified_msg_origin)**：
    在你想接收推送的会话（群聊或私聊）中，向机器人发送指令：
    ```
    /get_umo

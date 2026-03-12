@@ -10,7 +10,7 @@ from astrbot.api import logger
 from bs4 import BeautifulSoup
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.4.10", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.4.11", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -24,14 +24,21 @@ class WeiboMonitor(Star):
         if not self.data_dir.exists():
             self.data_dir.mkdir(parents=True, exist_ok=True)
         self.data_file = self.data_dir / "monitor_data.json"
+        
+        # 兼容旧路径迁移 (data/astrbot_plugin_weibo_monitor -> StarTools.get_data_dir())
+        old_data_file = os.path.join("data", "astrbot_plugin_weibo_monitor", "monitor_data.json")
+        if not self.data_file.exists() and os.path.exists(old_data_file):
+            try:
+                import shutil
+                shutil.copy2(old_data_file, self.data_file)
+                logger.info(f"WeiboMonitor: 已从旧路径迁移数据到 {self.data_file}")
+            except Exception as e:
+                logger.error(f"WeiboMonitor: 迁移数据失败: {e}")
+
         self._data = self._load_data()
 
-    @filter.on_astrbot_loaded()
-    async def on_loaded(self):
-        """当机器人加载完成后启动后台监控任务"""
-        # 如果已经存在任务（例如热重载），先取消
-        if self.monitor_task:
-            self.monitor_task.cancel()
+        # 启动后台监控任务
+        # 为了支持热重载和防止事件丢失，在 __init__ 中启动
         self.monitor_task = asyncio.create_task(self.run_monitor())
 
     def _load_data(self) -> dict:

@@ -20,7 +20,7 @@ WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.7.3", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.7.4", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -561,9 +561,11 @@ class WeiboMonitor(Star):
     def _collect_new_posts(self, uid: str, valid_mblogs: List[Dict[str, Any]], 
                           last_id: int, force_fetch: bool, 
                           username: str) -> List[Dict[str, Any]]:
-        """收集新的微博帖子，应用屏蔽词过滤"""
+        """收集新的微博帖子，应用屏蔽词过滤、原创/转发过滤"""
         new_posts: List[Dict[str, Any]] = []
         filter_keywords = self.config.get("filter_keywords", [])
+        send_original = self.config.get("send_original", True)
+        send_forward = self.config.get("send_forward", True)
         
         for mblog in valid_mblogs:
             current_id_val = mblog.get("id")
@@ -575,6 +577,15 @@ class WeiboMonitor(Star):
             # 停止条件：检查到旧帖
             if not force_fetch and current_id <= last_id:
                 break
+
+            # 区分原创和转发
+            is_forward = "retweeted_status" in mblog
+            if is_forward and not send_forward:
+                logger.info(f"WeiboMonitor: 微博 {current_id} 是转发微博，已根据配置跳过推送")
+                continue
+            if not is_forward and not send_original:
+                logger.info(f"WeiboMonitor: 微博 {current_id} 是原创微博，已根据配置跳过推送")
+                continue
 
             text = self.clean_text(mblog.get("text", ""))
             

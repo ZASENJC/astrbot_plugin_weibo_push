@@ -42,5 +42,15 @@
     "default": [],
     "description": "屏蔽词列表",
     "hint": "如果微博正文包含这些词，将不会被推送。例如: 推广, 广告"
+  },
+  "send_original": {
+    "type": "bool",
+    "default": true,
+    "description": "是否推送原创微博"
+  },
+  "send_forward": {
+    "type": "bool",
+    "default": true,
+    "description": "是否推送转发微博"
   }
 }

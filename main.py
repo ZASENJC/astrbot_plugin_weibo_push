@@ -20,7 +20,7 @@ WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.7.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.7.3", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -112,7 +112,17 @@ class WeiboMonitor(Star):
         targets_raw = self.config.get("target_conversation_id", [])
         if isinstance(targets_raw, str):
             return [t.strip() for t in targets_raw.split(",") if t.strip()]
-        return [str(t).strip() for t in targets_raw if str(t).strip()]
+        
+        # 兼容处理列表中包含逗号分隔字符串的情况
+        targets = []
+        if isinstance(targets_raw, list):
+            for item in targets_raw:
+                item_str = str(item).strip()
+                if "," in item_str:
+                    targets.extend([t.strip() for t in item_str.split(",") if t.strip()])
+                elif item_str:
+                    targets.append(item_str)
+        return targets
 
     @filter.command("get_umo")
     async def get_umo(self, event: AstrMessageEvent):
@@ -214,7 +224,55 @@ class WeiboMonitor(Star):
 
     @filter.command("weibo_check")
     async def weibo_check(self, event: AstrMessageEvent):
-        """立即检查并发送最新一条微博信息（用于测试）"""
+        """立即检查并发送列表中第一个账号的最新微博信息 (仅限第一个)"""
+        urls = self._parse_urls(self.config.get("weibo_urls", []))
+        if not urls:
+            yield event.plain_result("❌ 未在插件设置中配置监控URL。")
+            return
+            
+        yield event.plain_result(f"🔍 正在检查首个微博账号的最新动态...")
+        
+        # 只取第一个 URL
+        url = urls[0]
+        targets = self.get_targets()
+        msg_format = self.message_format
+        
+        uid = await self.parse_uid(url)
+        if not uid:
+            yield event.plain_result(f"❌ 无法解析URL: {url}")
+            return
+
+        latest_posts = await self.check_weibo(uid, force_fetch=True)
+        if latest_posts:
+            post = latest_posts[0]
+            content = msg_format.format(
+                name=post.get("username", "未知用户"),
+                weibo=post["text"],
+                link=post["link"],
+            )
+            chain = MessageChain().message(content)
+
+            if not targets:
+                await self.context.send_message(event.unified_msg_origin, chain)
+            else:
+                sent_count = 0
+                for target in targets:
+                    try:
+                        await self.context.send_message(target, chain)
+                        sent_count += 1
+                    except Exception as e:
+                        logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+                
+                if sent_count > 0:
+                    yield event.plain_result(f"✅ {post.get('username')} 已成功发送最新动态。")
+                else:
+                    yield event.plain_result(f"❌ {post.get('username')} 发送动态失败。")
+        else:
+            yield event.plain_result(f"ℹ️ UID {uid} 未获取到有效微博。")
+
+    @filter.command("weibo_check_all")
+    async def weibo_check_all(self, event: AstrMessageEvent):
+        """立即检查并发送列表中所有账号的最新微博信息"""
         urls = self._parse_urls(self.config.get("weibo_urls", []))
         targets = self.get_targets()
         msg_format = self.message_format
@@ -251,10 +309,18 @@ class WeiboMonitor(Star):
                 if not targets:
                     await self.context.send_message(event.unified_msg_origin, chain)
                 else:
+                    sent_count = 0
                     for target in targets:
-                        await self.context.send_message(target, chain)
-
-                results.append(f"✅ {post.get('username')} 已成功发送最新动态。")
+                        try:
+                            await self.context.send_message(target, chain)
+                            sent_count += 1
+                        except Exception as e:
+                            logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+                    
+                    if sent_count > 0:
+                        results.append(f"✅ {post.get('username')} 已成功发送最新动态。")
+                    else:
+                        results.append(f"❌ {post.get('username')} 发送动态失败。")
             else:
                 results.append(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -298,7 +364,17 @@ class WeiboMonitor(Star):
         """解析监控URL列表，支持字符串逗号分隔或列表格式"""
         if isinstance(urls_raw, str):
             return [u.strip() for u in urls_raw.split(",") if u.strip()]
-        return [str(u).strip() for u in urls_raw if str(u).strip()]
+        
+        # 兼容处理列表中包含逗号分隔字符串的情况
+        urls = []
+        if isinstance(urls_raw, list):
+            for item in urls_raw:
+                item_str = str(item).strip()
+                if "," in item_str:
+                    urls.extend([u.strip() for u in item_str.split(",") if u.strip()])
+                elif item_str:
+                    urls.append(item_str)
+        return urls
 
     async def _process_monitor_cycle(self, urls: List[str], req_interval: int, 
                                    targets: List[str], msg_format: str):
@@ -328,11 +404,18 @@ class WeiboMonitor(Star):
                 link=post["link"],
             )
             chain = MessageChain().message(content)
+            sent_count = 0
             for target in targets:
-                await self.context.send_message(target, chain)
-            logger.info(
-                f"WeiboMonitor: 已向 {len(targets)} 个目标推送 {post.get('username')} 的更新"
-            )
+                try:
+                    await self.context.send_message(target, chain)
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+            
+            if sent_count > 0:
+                logger.info(
+                    f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新"
+                )
 
     async def parse_uid(self, url: str) -> Optional[str]:
         """
@@ -544,14 +627,10 @@ class WeiboMonitor(Star):
                 if alt:
                     img.replace_with(alt)
             
-            # 处理超链接：转换为Markdown格式
+            # 处理超链接：移除所有超链接格式，仅保留链接内的文本内容，提升阅读观感
             for a in soup.find_all("a"):
-                href = a.get("href", "")
                 link_text = a.get_text()
-                if href and link_text:
-                    a.replace_with(f"[{link_text}]({href})")
-                else:
-                    a.replace_with(link_text)
+                a.replace_with(link_text)
             
             # 将 <br> 标签替换为换行符
             for br in soup.find_all("br"):

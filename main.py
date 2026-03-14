@@ -26,9 +26,16 @@ WEIBO_API_BASE = "https://m.weibo.cn/api/container/getIndex"
 WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
 CACHE_RETENTION_SECONDS = 6 * 60 * 60
+SUPPORTED_CONFIG_ROOT_KEYS = {
+    "auth_settings",
+    "monitoring_settings",
+    "content_settings",
+    "screenshot_settings",
+    "runtime_settings",
+}
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.9.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.9.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -49,6 +56,7 @@ class WeiboMonitor(Star):
         )
         self.running = True
         self.session_initialized_uids: set[str] = set()  # 跟踪本会话已初始化的UID
+        self._active_cache_files: set[Path] = set()
 
         # 确保数据目录存在
         self.data_dir = StarTools.get_data_dir()
@@ -135,6 +143,8 @@ class WeiboMonitor(Star):
         try:
             for cache_file in self.cache_dir.iterdir():
                 try:
+                    if cache_file in self._active_cache_files:
+                        continue
                     if cache_file.is_file() and cache_file.stat().st_mtime < expire_before:
                         cache_file.unlink()
                 except Exception as e:
@@ -148,6 +158,14 @@ class WeiboMonitor(Star):
         safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
         filename = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex}{safe_suffix}"
         return self.cache_dir / filename
+
+    def _mark_cache_file_active(self, path: Optional[str]):
+        if path:
+            self._active_cache_files.add(Path(path))
+
+    def _mark_cache_file_inactive(self, path: Optional[str]):
+        if path:
+            self._active_cache_files.discard(Path(path))
 
     async def get_kv_data(self, key: str, default=None):
         return self._data.get(key, default)
@@ -280,6 +298,12 @@ class WeiboMonitor(Star):
             if not isinstance(new_config, dict):
                 raise ValueError("配置格式不正确")
 
+            config_keys = set(new_config.keys())
+            if not config_keys.issubset(SUPPORTED_CONFIG_ROOT_KEYS):
+                raise ValueError(
+                    "检测到旧版或无效配置结构。当前版本仅支持新的分区式配置，请在后台重新配置后再导出导入。"
+                )
+
             count = 0
             for key, value in new_config.items():
                 self.config[key] = value
@@ -360,8 +384,16 @@ class WeiboMonitor(Star):
             if not targets:
                 yield event.plain_result("⚠️ 首条监控规则未配置允许推送的会话 ID，因此本次未执行推送。")
                 return
-            await self._send_new_posts([post], targets, msg_format)
-            yield event.plain_result(f"✅ {post.get('username')} 已按监控规则推送最新动态。")
+            result = await self._send_new_posts([post], targets, msg_format)
+            if result["posts_sent"] == 0:
+                yield event.plain_result(f"❌ {post.get('username')} 已获取到最新动态，但推送失败，请检查日志。")
+            elif result["target_failure"] > 0:
+                yield event.plain_result(
+                    f"⚠️ {post.get('username')} 已部分推送成功。"
+                    f"成功发送 {result['target_success']} 次，失败 {result['target_failure']} 次。"
+                )
+            else:
+                yield event.plain_result(f"✅ {post.get('username')} 已按监控规则推送最新动态。")
         else:
             yield event.plain_result(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -400,8 +432,15 @@ class WeiboMonitor(Star):
                 if not targets:
                     results.append(f"⚠️ {post.get('username')} 未配置允许推送的会话 ID，已跳过。")
                     continue
-                await self._send_new_posts([post], targets, msg_format)
-                results.append(f"✅ {post.get('username')} 已按规则推送最新动态。")
+                result = await self._send_new_posts([post], targets, msg_format)
+                if result["posts_sent"] == 0:
+                    results.append(f"❌ {post.get('username')} 已获取到最新动态，但推送失败，请检查日志。")
+                elif result["target_failure"] > 0:
+                    results.append(
+                        f"⚠️ {post.get('username')} 部分推送成功：成功 {result['target_success']} 次，失败 {result['target_failure']} 次。"
+                    )
+                else:
+                    results.append(f"✅ {post.get('username')} 已按规则推送最新动态。")
             else:
                 results.append(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -570,7 +609,9 @@ class WeiboMonitor(Star):
                 return None
             cache_path = self._create_cache_path(suffix, prefix)
             cache_path.write_bytes(resp.content)
-            return str(cache_path)
+            cache_path_str = str(cache_path)
+            self._mark_cache_file_active(cache_path_str)
+            return cache_path_str
         except Exception as e:
             logger.error(f"WeiboMonitor: 下载媒体失败 ({url}): {e}")
             return None
@@ -586,9 +627,10 @@ class WeiboMonitor(Star):
         return chain
 
     async def _build_media_chain(self, post: Dict[str, Any], enable_images: bool,
-                                 enable_videos: bool) -> Optional[MessageChain]:
+                                 enable_videos: bool) -> Tuple[Optional[MessageChain], List[str]]:
         image_urls: List[str] = post.get("image_urls") or []
         video_url: Optional[str] = post.get("video_url")
+        cached_paths: List[str] = []
 
         nodes_list: List[Node] = []
         if video_url and enable_videos:
@@ -604,6 +646,7 @@ class WeiboMonitor(Star):
             for img_url in image_urls:
                 img_path = await self._download_to_cache(img_url, ".jpg", "image")
                 if img_path:
+                    cached_paths.append(img_path)
                     img_components.append(Image.fromFileSystem(img_path))
             if img_components:
                 nodes_list.append(
@@ -615,16 +658,36 @@ class WeiboMonitor(Star):
                 )
 
         if not nodes_list:
-            return None
+            return None, cached_paths
 
         chain = MessageChain()
         chain.chain.append(Nodes(nodes=nodes_list))
-        return chain
+        return chain, cached_paths
 
-    async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str):
+    async def _release_cached_files(self, paths: List[str]):
+        if not paths:
+            return
+        await asyncio.sleep(1)
+        for path in paths:
+            self._mark_cache_file_inactive(path)
+
+    async def _send_chain_to_targets(self, targets: List[str], chain: MessageChain) -> Tuple[int, int]:
+        success_count = 0
+        failure_count = 0
+        for target in targets:
+            try:
+                await self.context.send_message(target, chain)
+                success_count += 1
+            except Exception as e:
+                failure_count += 1
+                logger.error(f"WeiboMonitor: 推送到 {target} 失败: {e}")
+        return success_count, failure_count
+
+    async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str) -> Dict[str, int]:
         enable_screenshot = self.screenshot_config.get("weibo_screenshot", True)
         enable_images = self.content_config.get("send_images", True)
         enable_videos = self.content_config.get("send_videos", True)
+        summary = {"posts_total": len(new_posts), "posts_sent": 0, "target_success": 0, "target_failure": 0}
 
         for post in new_posts:
             content = msg_format.format(
@@ -633,21 +696,36 @@ class WeiboMonitor(Star):
                 link=post["link"],
             )
             screenshot_path = await self._take_screenshot(post["link"]) if enable_screenshot else None
-            text_chain = self._build_text_chain(content, screenshot_path)
-            media_chain = await self._build_media_chain(post, enable_images, enable_videos)
+            cached_paths: List[str] = []
+            if screenshot_path:
+                self._mark_cache_file_active(screenshot_path)
+                cached_paths.append(screenshot_path)
 
-            sent_count = 0
-            for target in targets:
-                try:
-                    await self.context.send_message(target, text_chain)
-                    if media_chain:
-                        await self.context.send_message(target, media_chain)
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"WeiboMonitor: 推送到 {target} 失败: {e}")
+            try:
+                text_chain = self._build_text_chain(content, screenshot_path)
+                media_chain, media_cached_paths = await self._build_media_chain(post, enable_images, enable_videos)
+                cached_paths.extend(media_cached_paths)
 
-            if sent_count > 0:
-                logger.info(f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新")
+                text_success, text_failure = await self._send_chain_to_targets(targets, text_chain)
+                summary["target_success"] += text_success
+                summary["target_failure"] += text_failure
+
+                media_success = media_failure = 0
+                if media_chain:
+                    media_success, media_failure = await self._send_chain_to_targets(targets, media_chain)
+                    summary["target_success"] += media_success
+                    summary["target_failure"] += media_failure
+
+                if text_success > 0:
+                    summary["posts_sent"] += 1
+                    logger.info(f"WeiboMonitor: 已向 {text_success}/{len(targets)} 个目标推送 {post.get('username')} 的正文消息")
+                if media_chain and media_success > 0:
+                    logger.info(f"WeiboMonitor: 已向 {media_success}/{len(targets)} 个目标推送 {post.get('username')} 的媒体消息")
+            finally:
+                normalized_paths = [str(path) for path in {Path(p) for p in cached_paths}]
+                await self._release_cached_files(normalized_paths)
+
+        return summary
 
     async def parse_uid(self, url: str) -> Optional[str]:
         url = url.strip()

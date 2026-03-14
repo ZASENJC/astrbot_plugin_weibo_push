@@ -64,5 +64,47 @@
     "type": "bool",
     "default": true,
     "description": "是否推送转发微博"
+  },
+  "weibo_screenshot": {
+    "type": "bool",
+    "default": true,
+    "description": "是否发送微博网页截图",
+    "hint": "开启后将截取微博页面并随消息一起发送"
+  },
+  "screenshot_full_page": {
+    "type": "bool",
+    "default": false,
+    "description": "是否截取完整长图",
+    "hint": "开启后会截取整个网页的长图，关闭则仅截取当前屏幕大小"
+  },
+  "screenshot_width": {
+    "type": "int",
+    "default": 1280,
+    "description": "截图宽度",
+    "hint": "默认 1280"
+  },
+  "screenshot_height": {
+    "type": "int",
+    "default": 720,
+    "description": "截图高度",
+    "hint": "默认 720"
+  },
+  "screenshot_format": {
+    "type": "string",
+    "default": "jpeg",
+    "description": "截图格式",
+    "hint": "可选填写 jpeg 或 png"
+  },
+  "screenshot_quality": {
+    "type": "int",
+    "default": 80,
+    "description": "截图压缩质量",
+    "hint": "仅对 jpeg 格式有效，推荐保持 80 即可"
+  },
+  "screenshot_wait_time": {
+    "type": "int",
+    "default": 2000,
+    "description": "截图等待时间 (毫秒)",
+    "hint": "截图前等待网页加载的时间，2000 即代表等待 2 秒，防止截到白屏"
   }
 }

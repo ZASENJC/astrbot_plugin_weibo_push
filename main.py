@@ -21,12 +21,19 @@ WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.7.7", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.8.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
         self.monitor_task: Optional[asyncio.Task] = None
+        
+        # 检查Cookie是否配置
+        cookie = self.config.get("weibo_cookie", "")
+        if not cookie:
+            logger.error("WeiboMonitor: 未配置微博Cookie，插件无法正常工作！请在插件设置中填写weibo_cookie。")
+            raise ValueError("微博Cookie为必填项，请配置后再启动插件。")
+        
         # 配置HTTP客户端，添加重试和超时设置
         transport = httpx.AsyncHTTPTransport(retries=2)  # 最多重试2次
         self.client = httpx.AsyncClient(

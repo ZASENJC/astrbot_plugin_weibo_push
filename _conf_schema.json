@@ -39,8 +39,8 @@
   "weibo_cookie": {
     "type": "string",
     "default": "",
-    "description": "微博 Cookie (可选)",
-    "hint": "如果频繁抓取失败，请在设置中填入微博移动端 Cookie"
+    "description": "微博 Cookie",
+    "hint": "必须配置微博 Cookie 才能正常抓取数据，确保稳定性"
   },
   "message_format": {
     "type": "string",

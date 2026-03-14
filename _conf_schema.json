@@ -1,117 +1,171 @@
 {
-  "weibo_urls": {
-    "type": "list",
-    "item_type": "string",
-    "default": [],
-    "description": "微博用户主页链接",
-    "hint": "可以填写多个，例如: https://weibo.com/u/1234567890"
+  "auth_settings": {
+    "type": "object",
+    "description": "认证信息",
+    "hint": "先填写微博 Cookie，否则插件无法抓取微博数据。",
+    "items": {
+      "weibo_cookie": {
+        "type": "string",
+        "default": "",
+        "description": "微博 Cookie",
+        "hint": "必须配置微博 Cookie 才能正常抓取数据。"
+      }
+    }
   },
-  "target_conversation_id": {
-    "type": "list",
-    "item_type": "string",
-    "default": [],
-    "description": "推送目标会话 ID",
-    "hint": "可以填写多个。通过指令 /get_umo 获取当前会话 ID"
+  "monitoring_settings": {
+    "type": "object",
+    "description": "微博账号与推送范围",
+    "hint": "每条订阅规则同时定义“监控谁”和“发到哪些会话”。留空会话 ID 时，该微博默认不推送。",
+    "items": {
+      "subscription_rules": {
+        "type": "template_list",
+        "default": [],
+        "description": "订阅规则",
+        "hint": "推荐逐条添加。一个微博账号对应一条规则，便于管理和排查。",
+        "templates": {
+          "subscription_rule": {
+            "name": "微博订阅规则",
+            "hint": "只有填写在“允许接收推送的会话 ID”中的群聊或私聊，才会收到这个微博账号的更新。",
+            "items": {
+              "source": {
+                "type": "string",
+                "default": "",
+                "description": "微博主页 / UID / 用户名链接",
+                "hint": "支持 UID、https://weibo.com/u/xxx、https://weibo.com/n/用户名。"
+              },
+              "allowed_targets": {
+                "type": "text",
+                "default": "",
+                "description": "允许接收推送的会话 ID",
+                "hint": "填写通过 /get_umo 获取到的会话 ID，支持英文逗号或换行分隔。留空则不推送。"
+              }
+            }
+          }
+        }
+      }
+    }
   },
-  "check_interval": {
-    "type": "int",
-    "default": 10,
-    "description": "检查间隔（分钟）"
+  "content_settings": {
+    "type": "object",
+    "description": "推送内容",
+    "hint": "控制推送正文、媒体内容与过滤规则。",
+    "items": {
+      "message_format": {
+        "type": "string",
+        "default": "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}",
+        "description": "消息模板",
+        "hint": "支持变量: {name}（用户名）、{weibo}（正文）、{link}（链接）。"
+      },
+      "send_images": {
+        "type": "bool",
+        "default": true,
+        "description": "推送微博图片"
+      },
+      "send_videos": {
+        "type": "bool",
+        "default": true,
+        "description": "推送微博视频"
+      },
+      "send_original": {
+        "type": "bool",
+        "default": true,
+        "description": "推送原创微博"
+      },
+      "send_forward": {
+        "type": "bool",
+        "default": true,
+        "description": "推送转发微博"
+      },
+      "filter_keywords": {
+        "type": "list",
+        "item_type": "string",
+        "default": [],
+        "description": "屏蔽关键词",
+        "hint": "正文包含任一关键词时不推送，例如：推广、广告。"
+      },
+      "whitelist_keywords": {
+        "type": "list",
+        "item_type": "string",
+        "default": [],
+        "description": "必含关键词",
+        "hint": "填写后，只有正文包含任一关键词时才会推送。留空则不启用。"
+      }
+    }
   },
-  "check_interval_jitter": {
-    "type": "int",
-    "default": 2,
-    "description": "检查间隔随机浮动（分钟）",
-    "hint": "实际检查间隔会在 [间隔-浮动, 间隔+浮动] 范围内随机选择。例如：间隔10，浮动2，则随机在 8-12 分钟内检查一次。"
+  "screenshot_settings": {
+    "type": "object",
+    "description": "截图设置",
+    "hint": "截图作为额外附加内容，独立于微博图片和微博视频开关。",
+    "items": {
+      "weibo_screenshot": {
+        "type": "bool",
+        "default": true,
+        "description": "附加微博网页截图"
+      },
+      "screenshot_full_page": {
+        "type": "bool",
+        "default": false,
+        "description": "截取完整长图",
+        "hint": "开启后截取整个网页，关闭则仅截取当前视口。"
+      },
+      "screenshot_width": {
+        "type": "int",
+        "default": 1280,
+        "description": "截图宽度"
+      },
+      "screenshot_height": {
+        "type": "int",
+        "default": 720,
+        "description": "截图高度"
+      },
+      "screenshot_format": {
+        "type": "string",
+        "default": "jpeg",
+        "description": "截图格式",
+        "hint": "可选 jpeg 或 png。"
+      },
+      "screenshot_quality": {
+        "type": "int",
+        "default": 80,
+        "description": "截图压缩质量",
+        "hint": "仅对 jpeg 有效，推荐保持默认值。"
+      },
+      "screenshot_wait_time": {
+        "type": "int",
+        "default": 2000,
+        "description": "截图等待时间（毫秒）",
+        "hint": "截图前等待页面加载的时间，默认 2000。"
+      }
+    }
   },
-  "request_interval": {
-    "type": "int",
-    "default": 5,
-    "description": "账号请求间隔（秒）",
-    "hint": "多个账号间抓取的间隔时间，避免请求过快被拦截"
-  },
-  "request_interval_jitter": {
-    "type": "int",
-    "default": 1,
-    "description": "请求间隔随机浮动（秒）",
-    "hint": "实际请求间隔会在 [间隔-浮动, 间隔+浮动] 范围内随机选择。设置为0则不使用随机性。"
-  },
-  "weibo_cookie": {
-    "type": "string",
-    "default": "",
-    "description": "微博 Cookie",
-    "hint": "必须配置微博 Cookie 才能正常抓取数据，确保稳定性"
-  },
-  "message_format": {
-    "type": "string",
-    "default": "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}",
-    "description": "推送消息格式",
-    "hint": "支持变量: {name} (用户名), {weibo} (内容), {link} (链接)"
-  },
-  "filter_keywords": {
-    "type": "list",
-    "item_type": "string",
-    "default": [],
-    "description": "屏蔽词列表",
-    "hint": "如果微博正文包含这些词，将不会被推送。例如: 推广, 广告"
-  },
-  "whitelist_keywords": {
-    "type": "list",
-    "item_type": "string",
-    "default": [],
-    "description": "关键词白名单",
-    "hint": "填写后，只有微博正文包含这些词中的任意一个才会被推送。留空则不启用白名单过滤。例如: 新歌, 演唱会"
-  },
-  "send_original": {
-    "type": "bool",
-    "default": true,
-    "description": "是否推送原创微博"
-  },
-  "send_forward": {
-    "type": "bool",
-    "default": true,
-    "description": "是否推送转发微博"
-  },
-  "weibo_screenshot": {
-    "type": "bool",
-    "default": true,
-    "description": "是否发送微博网页截图",
-    "hint": "开启后将截取微博页面并随消息一起发送"
-  },
-  "screenshot_full_page": {
-    "type": "bool",
-    "default": false,
-    "description": "是否截取完整长图",
-    "hint": "开启后会截取整个网页的长图，关闭则仅截取当前屏幕大小"
-  },
-  "screenshot_width": {
-    "type": "int",
-    "default": 1280,
-    "description": "截图宽度",
-    "hint": "默认 1280"
-  },
-  "screenshot_height": {
-    "type": "int",
-    "default": 720,
-    "description": "截图高度",
-    "hint": "默认 720"
-  },
-  "screenshot_format": {
-    "type": "string",
-    "default": "jpeg",
-    "description": "截图格式",
-    "hint": "可选填写 jpeg 或 png"
-  },
-  "screenshot_quality": {
-    "type": "int",
-    "default": 80,
-    "description": "截图压缩质量",
-    "hint": "仅对 jpeg 格式有效，推荐保持 80 即可"
-  },
-  "screenshot_wait_time": {
-    "type": "int",
-    "default": 2000,
-    "description": "截图等待时间 (毫秒)",
-    "hint": "截图前等待网页加载的时间，2000 即代表等待 2 秒，防止截到白屏"
+  "runtime_settings": {
+    "type": "object",
+    "description": "运行设置",
+    "hint": "控制检查频率与请求间隔，建议保持默认值或小幅调整。",
+    "items": {
+      "check_interval": {
+        "type": "int",
+        "default": 10,
+        "description": "检查间隔（分钟）"
+      },
+      "check_interval_jitter": {
+        "type": "int",
+        "default": 2,
+        "description": "检查间隔随机浮动（分钟）",
+        "hint": "实际检查间隔会在 [间隔-浮动, 间隔+浮动] 范围内随机选择。"
+      },
+      "request_interval": {
+        "type": "int",
+        "default": 5,
+        "description": "账号请求间隔（秒）",
+        "hint": "多账号抓取时，每个账号之间的等待时间。"
+      },
+      "request_interval_jitter": {
+        "type": "int",
+        "default": 1,
+        "description": "请求间隔随机浮动（秒）",
+        "hint": "设置为 0 则关闭随机浮动。"
+      }
+    }
   }
 }

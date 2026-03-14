@@ -5,9 +5,10 @@ import os
 import json
 import base64
 import random
-import tempfile
 import sys
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -24,9 +25,10 @@ DEFAULT_MESSAGE_TEMPLATE = "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {l
 WEIBO_API_BASE = "https://m.weibo.cn/api/container/getIndex"
 WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
+CACHE_RETENTION_SECONDS = 6 * 60 * 60
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.8.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.9.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -34,9 +36,9 @@ class WeiboMonitor(Star):
         self.monitor_task: Optional[asyncio.Task] = None
         
         # 检查Cookie是否配置
-        cookie = self.config.get("weibo_cookie", "")
+        cookie = self.auth_config.get("weibo_cookie", "")
         if not cookie:
-            logger.warning("WeiboMonitor: 未配置微博Cookie，插件无法正常工作！请在插件设置中填写weibo_cookie。")
+            logger.warning("WeiboMonitor: 未配置微博 Cookie，插件无法正常工作！请在插件设置中填写认证信息。")
         
         # 配置HTTP客户端，添加重试和超时设置
         transport = httpx.AsyncHTTPTransport(retries=2)  # 最多重试2次
@@ -53,6 +55,8 @@ class WeiboMonitor(Star):
         if not self.data_dir.exists():
             self.data_dir.mkdir(parents=True, exist_ok=True)
         self.data_file = self.data_dir / "monitor_data.json"
+        self.cache_dir = self.data_dir / "media_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # 兼容旧路径迁移
         old_data_file = os.path.join("data", "astrbot_plugin_weibo_monitor", "monitor_data.json")
@@ -65,6 +69,7 @@ class WeiboMonitor(Star):
                 logger.error(f"WeiboMonitor: 迁移数据失败: {e}")
 
         self._data = self._load_data()
+        self._cleanup_cache()
 
         # 启动后台监控任务
         self.monitor_task = asyncio.create_task(self.run_monitor())
@@ -125,6 +130,25 @@ class WeiboMonitor(Star):
             except:
                 pass
 
+    def _cleanup_cache(self):
+        expire_before = time.time() - CACHE_RETENTION_SECONDS
+        try:
+            for cache_file in self.cache_dir.iterdir():
+                try:
+                    if cache_file.is_file() and cache_file.stat().st_mtime < expire_before:
+                        cache_file.unlink()
+                except Exception as e:
+                    logger.debug(f"WeiboMonitor: 清理缓存文件失败 ({cache_file}): {e}")
+        except FileNotFoundError:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"WeiboMonitor: 清理缓存目录失败: {e}")
+
+    def _create_cache_path(self, suffix: str, prefix: str) -> Path:
+        safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        filename = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex}{safe_suffix}"
+        return self.cache_dir / filename
+
     async def get_kv_data(self, key: str, default=None):
         return self._data.get(key, default)
 
@@ -132,8 +156,28 @@ class WeiboMonitor(Star):
         self._data[key] = value
         self._save_data()
 
+    @property
+    def auth_config(self) -> Dict[str, Any]:
+        return self.config.get("auth_settings", {}) or {}
+
+    @property
+    def monitor_config(self) -> Dict[str, Any]:
+        return self.config.get("monitoring_settings", {}) or {}
+
+    @property
+    def content_config(self) -> Dict[str, Any]:
+        return self.config.get("content_settings", {}) or {}
+
+    @property
+    def screenshot_config(self) -> Dict[str, Any]:
+        return self.config.get("screenshot_settings", {}) or {}
+
+    @property
+    def runtime_config(self) -> Dict[str, Any]:
+        return self.config.get("runtime_settings", {}) or {}
+
     def get_headers(self, uid: str = "") -> Dict[str, str]:
-        cookie = self.config.get("weibo_cookie", "")
+        cookie = self.auth_config.get("weibo_cookie", "")
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
             "Accept": "application/json, text/plain, */*",
@@ -159,26 +203,52 @@ class WeiboMonitor(Star):
         await self.client.aclose()
         logger.info("WeiboMonitor 插件已停止")
 
-    def get_targets(self) -> List[str]:
-        targets_raw = self.config.get("target_conversation_id", [])
-        if isinstance(targets_raw, str):
-            return [t.strip() for t in targets_raw.split(",") if t.strip()]
+    def _parse_multi_value(self, raw: Any) -> List[str]:
+        values: List[str] = []
+        if isinstance(raw, str):
+            raw_items = [raw]
+        elif isinstance(raw, list):
+            raw_items = raw
+        else:
+            raw_items = []
 
-        targets = []
-        if isinstance(targets_raw, list):
-            for item in targets_raw:
-                item_str = str(item).strip()
-                if "," in item_str:
-                    targets.extend([t.strip() for t in item_str.split(",") if t.strip()])
-                elif item_str:
-                    targets.append(item_str)
-        return targets
+        for item in raw_items:
+            item_str = str(item).replace("\n", ",").strip()
+            if not item_str:
+                continue
+            for part in item_str.split(","):
+                value = part.strip()
+                if value:
+                    values.append(value)
+        return values
+
+    def get_monitor_rules(self) -> List[Dict[str, Any]]:
+        rules_raw = self.monitor_config.get("subscription_rules", [])
+        parsed_rules: List[Dict[str, Any]] = []
+
+        if isinstance(rules_raw, list):
+            for item in rules_raw:
+                if not isinstance(item, dict):
+                    continue
+
+                url = str(item.get("source", "")).strip()
+                if not url:
+                    continue
+
+                targets = self._parse_multi_value(item.get("allowed_targets", []))
+                parsed_rules.append({
+                    "url": url,
+                    "targets": targets,
+                })
+
+        return parsed_rules
 
     @filter.command("get_umo")
     async def get_umo(self, event: AstrMessageEvent):
         """获取当前会话的 ID (unified_msg_origin)，用于设置推送目标"""
         yield event.plain_result(
-            f"当前会话 ID: {event.unified_msg_origin}\n请将此 ID 填入插件设置中的 target_conversation_id 项。"
+            f"当前会话 ID: {event.unified_msg_origin}\n"
+            f"请将此 ID 填入插件设置中的「微博账号与推送范围 -> 订阅规则 -> 允许接收推送的会话 ID」。"
         )
 
     @filter.command("weibo_export")
@@ -231,7 +301,7 @@ class WeiboMonitor(Star):
 
     @filter.command("weibo_verify")
     async def weibo_verify(self, event: AstrMessageEvent):
-        cookie = self.config.get("weibo_cookie", "")
+        cookie = self.auth_config.get("weibo_cookie", "")
         if not cookie:
             yield event.plain_result("❌ 未配置 Cookie。")
             return
@@ -267,15 +337,16 @@ class WeiboMonitor(Star):
 
     @filter.command("weibo_check")
     async def weibo_check(self, event: AstrMessageEvent):
-        urls = self._parse_urls(self.config.get("weibo_urls", []))
-        if not urls:
-            yield event.plain_result("❌ 未在插件设置中配置监控URL。")
+        rules = self.get_monitor_rules()
+        if not rules:
+            yield event.plain_result("❌ 未在插件设置中配置订阅规则。")
             return
             
         yield event.plain_result(f"🔍 正在检查首个微博账号的最新动态...")
-        
-        url = urls[0]
-        targets = self.get_targets()
+
+        rule = rules[0]
+        url = rule["url"]
+        targets = rule["targets"]
         msg_format = self.message_format
         
         uid = await self.parse_uid(url)
@@ -286,35 +357,38 @@ class WeiboMonitor(Star):
         latest_posts = await self.check_weibo(uid, force_fetch=True)
         if latest_posts:
             post = latest_posts[0]
-            actual_targets = targets if targets else [event.unified_msg_origin]
-            await self._send_new_posts([post], actual_targets, msg_format)
-            yield event.plain_result(f"✅ {post.get('username')} 已成功发送最新动态。")
+            if not targets:
+                yield event.plain_result("⚠️ 首条监控规则未配置允许推送的会话 ID，因此本次未执行推送。")
+                return
+            await self._send_new_posts([post], targets, msg_format)
+            yield event.plain_result(f"✅ {post.get('username')} 已按监控规则推送最新动态。")
         else:
             yield event.plain_result(f"ℹ️ UID {uid} 未获取到有效微博。")
 
     @filter.command("weibo_check_all")
     async def weibo_check_all(self, event: AstrMessageEvent):
-        urls = self._parse_urls(self.config.get("weibo_urls", []))
-        targets = self.get_targets()
+        rules = self.get_monitor_rules()
         msg_format = self.message_format
         
-        base_req_interval = self.config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
-        req_jitter = self.config.get("request_interval_jitter", 0)
+        base_req_interval = self.runtime_config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
+        req_jitter = self.runtime_config.get("request_interval_jitter", 0)
 
-        if not urls:
-            yield event.plain_result("❌ 未在插件设置中配置监控URL。")
+        if not rules:
+            yield event.plain_result("❌ 未在插件设置中配置订阅规则。")
             return
 
         yield event.plain_result(
-            f"🔍 正在立即检查 {len(urls)} 个微博账号的最新动态..."
+            f"🔍 正在立即检查 {len(rules)} 条微博监控规则..."
         )
 
         results = []
-        for i, url in enumerate(urls):
+        for i, rule in enumerate(rules):
             if i > 0:
                 actual_req_interval = max(1, random.randint(base_req_interval - req_jitter, base_req_interval + req_jitter))
                 await asyncio.sleep(actual_req_interval)
 
+            url = rule["url"]
+            targets = rule["targets"]
             uid = await self.parse_uid(url)
             if not uid:
                 results.append(f"❌ 无法解析URL: {url}")
@@ -323,9 +397,11 @@ class WeiboMonitor(Star):
             latest_posts = await self.check_weibo(uid, force_fetch=True)
             if latest_posts:
                 post = latest_posts[0]
-                actual_targets = targets if targets else [event.unified_msg_origin]
-                await self._send_new_posts([post], actual_targets, msg_format)
-                results.append(f"✅ {post.get('username')} 已成功发送最新动态。")
+                if not targets:
+                    results.append(f"⚠️ {post.get('username')} 未配置允许推送的会话 ID，已跳过。")
+                    continue
+                await self._send_new_posts([post], targets, msg_format)
+                results.append(f"✅ {post.get('username')} 已按规则推送最新动态。")
             else:
                 results.append(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -333,7 +409,7 @@ class WeiboMonitor(Star):
 
     @property
     def message_format(self) -> str:
-        return self.config.get(
+        return self.content_config.get(
             "message_format", DEFAULT_MESSAGE_TEMPLATE
         ).replace("\\n", "\n")
 
@@ -343,27 +419,24 @@ class WeiboMonitor(Star):
 
         while self.running:
             try:
-                urls = self._parse_urls(self.config.get("weibo_urls", []))
+                monitor_rules = self.get_monitor_rules()
                 
-                base_interval = max(1, self.config.get("check_interval", DEFAULT_CHECK_INTERVAL))
-                interval_jitter = self.config.get("check_interval_jitter", 0)
+                base_interval = max(1, self.runtime_config.get("check_interval", DEFAULT_CHECK_INTERVAL))
+                interval_jitter = self.runtime_config.get("check_interval_jitter", 0)
                 actual_interval = max(1, random.randint(base_interval - interval_jitter, base_interval + interval_jitter))
                 
-                base_req_interval = self.config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
-                req_jitter = self.config.get("request_interval_jitter", 0)
-                
-                targets = self.get_targets()
+                base_req_interval = self.runtime_config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
+                req_jitter = self.runtime_config.get("request_interval_jitter", 0)
                 msg_format = self.message_format
+                self._cleanup_cache()
 
-                cookie = self.config.get("weibo_cookie", "")
+                cookie = self.auth_config.get("weibo_cookie", "")
                 if not cookie:
-                    logger.warning("WeiboMonitor: 未配置微博Cookie，跳过本轮检查。请尽快配置！")
-                elif not urls:
-                    logger.debug("WeiboMonitor: 未配置监控URL")
-                elif not targets:
-                    logger.debug("WeiboMonitor: 未配置推送目标会话ID")
+                    logger.warning("WeiboMonitor: 未配置微博 Cookie，跳过本轮检查。请尽快配置！")
+                elif not monitor_rules:
+                    logger.debug("WeiboMonitor: 未配置订阅规则")
                 else:
-                    await self._process_monitor_cycle(urls, base_req_interval, req_jitter, targets, msg_format)
+                    await self._process_monitor_cycle(monitor_rules, base_req_interval, req_jitter, msg_format)
 
                 logger.debug(f"WeiboMonitor: 下次检查将在 {actual_interval} 分钟后执行")
                 await asyncio.sleep(actual_interval * 60)
@@ -387,17 +460,23 @@ class WeiboMonitor(Star):
                     urls.append(item_str)
         return urls
 
-    async def _process_monitor_cycle(self, urls: List[str], base_req_interval: int, req_jitter: int,
-                                   targets: List[str], msg_format: str):
-        for i, url in enumerate(urls):
+    async def _process_monitor_cycle(self, monitor_rules: List[Dict[str, Any]], base_req_interval: int,
+                                   req_jitter: int, msg_format: str):
+        for i, rule in enumerate(monitor_rules):
             try:
                 if i > 0:
                     actual_req_interval = max(1, random.randint(base_req_interval - req_jitter, base_req_interval + req_jitter))
                     await asyncio.sleep(actual_req_interval)
 
+                url = rule["url"]
+                targets = rule["targets"]
                 uid = await self.parse_uid(url)
                 if not uid:
                     logger.warning(f"WeiboMonitor: 无法解析URL {url}，已跳过")
+                    continue
+
+                if not targets:
+                    logger.info(f"WeiboMonitor: 监控规则 {url} 未配置允许推送的会话 ID，已跳过推送")
                     continue
 
                 new_posts = await self.check_weibo(uid)
@@ -422,18 +501,16 @@ class WeiboMonitor(Star):
         except Exception:
             pass
 
-        width        = int(screenshot_cfg.get("screenshot_width")  or self.config.get("screenshot_width",  1280))
-        height       = int(screenshot_cfg.get("screenshot_height") or self.config.get("screenshot_height", 720))
-        quality      = int(screenshot_cfg.get("screenshot_quality") or self.config.get("screenshot_quality", 80))
-        wait_ms      = int(screenshot_cfg.get("screenshot_wait_time") or self.config.get("screenshot_wait_time", 2000))
-        full_page    = bool(screenshot_cfg.get("screenshot_full_page") or self.config.get("screenshot_full_page", False))
-        fmt          = str(screenshot_cfg.get("screenshot_format") or self.config.get("screenshot_format", "jpeg")).lower()
+        width        = int(screenshot_cfg.get("screenshot_width")  or self.screenshot_config.get("screenshot_width",  1280))
+        height       = int(screenshot_cfg.get("screenshot_height") or self.screenshot_config.get("screenshot_height", 720))
+        quality      = int(screenshot_cfg.get("screenshot_quality") or self.screenshot_config.get("screenshot_quality", 80))
+        wait_ms      = int(screenshot_cfg.get("screenshot_wait_time") or self.screenshot_config.get("screenshot_wait_time", 2000))
+        full_page    = bool(screenshot_cfg.get("screenshot_full_page") or self.screenshot_config.get("screenshot_full_page", False))
+        fmt          = str(screenshot_cfg.get("screenshot_format") or self.screenshot_config.get("screenshot_format", "jpeg")).lower()
         if fmt not in ("jpeg", "png"):
             fmt = "jpeg"
 
-        tmp_file = tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False)
-        tmp_path = tmp_file.name
-        tmp_file.close()
+        tmp_path = self._create_cache_path(fmt, "screenshot")
 
         try:
             async with async_playwright() as p:
@@ -444,7 +521,7 @@ class WeiboMonitor(Star):
                 browser = await p.chromium.launch(**launch_kwargs)
                 page = await browser.new_page(viewport={"width": width, "height": height})
 
-                cookie_str = self.config.get("weibo_cookie", "")
+                cookie_str = self.auth_config.get("weibo_cookie", "")
                 if cookie_str:
                     cookies = []
                     for part in cookie_str.split(";"):
@@ -464,7 +541,7 @@ class WeiboMonitor(Star):
                 await page.wait_for_timeout(wait_ms)
 
                 shot_kwargs: Dict[str, Any] = {
-                    "path": tmp_path,
+                    "path": str(tmp_path),
                     "full_page": full_page,
                     "type": fmt,
                 }
@@ -475,32 +552,79 @@ class WeiboMonitor(Star):
                 await browser.close()
 
             logger.info(f"WeiboMonitor: 截图成功 -> {tmp_path}")
-            return tmp_path
+            return str(tmp_path)
 
         except Exception as e:
             logger.error(f"WeiboMonitor: 截图失败 ({url}): {e}")
             try:
-                os.unlink(tmp_path)
+                tmp_path.unlink()
             except Exception:
                 pass
             return None
 
-    async def _download_to_tmp(self, url: str, suffix: str) -> Optional[str]:
-        """下载媒体文件到临时文件，返回路径"""
+    async def _download_to_cache(self, url: str, suffix: str, prefix: str) -> Optional[str]:
+        """下载媒体文件到缓存目录，返回路径"""
         try:
             resp = await self.client.get(url, headers=self.get_headers(), follow_redirects=True)
             if resp.status_code != 200:
                 return None
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            tmp.write(resp.content)
-            tmp.close()
-            return tmp.name
+            cache_path = self._create_cache_path(suffix, prefix)
+            cache_path.write_bytes(resp.content)
+            return str(cache_path)
         except Exception as e:
             logger.error(f"WeiboMonitor: 下载媒体失败 ({url}): {e}")
             return None
 
+    def _build_text_chain(self, content: str, screenshot_path: Optional[str]) -> MessageChain:
+        chain = MessageChain()
+        chain.chain.append(Plain(content))
+        if screenshot_path:
+            try:
+                chain.chain.append(Image.fromFileSystem(screenshot_path))
+            except Exception as e:
+                logger.warning(f"WeiboMonitor: 截图附加失败: {e}")
+        return chain
+
+    async def _build_media_chain(self, post: Dict[str, Any], enable_images: bool,
+                                 enable_videos: bool) -> Optional[MessageChain]:
+        image_urls: List[str] = post.get("image_urls") or []
+        video_url: Optional[str] = post.get("video_url")
+
+        nodes_list: List[Node] = []
+        if video_url and enable_videos:
+            nodes_list.append(
+                Node(
+                    uin="0",
+                    name=post.get("username", "微博"),
+                    content=[Video.fromURL(video_url)],
+                )
+            )
+        elif image_urls and enable_images:
+            img_components = []
+            for img_url in image_urls:
+                img_path = await self._download_to_cache(img_url, ".jpg", "image")
+                if img_path:
+                    img_components.append(Image.fromFileSystem(img_path))
+            if img_components:
+                nodes_list.append(
+                    Node(
+                        uin="0",
+                        name=post.get("username", "微博"),
+                        content=img_components,
+                    )
+                )
+
+        if not nodes_list:
+            return None
+
+        chain = MessageChain()
+        chain.chain.append(Nodes(nodes=nodes_list))
+        return chain
+
     async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str):
-        enable_screenshot = self.config.get("weibo_screenshot", True)
+        enable_screenshot = self.screenshot_config.get("weibo_screenshot", True)
+        enable_images = self.content_config.get("send_images", True)
+        enable_videos = self.content_config.get("send_videos", True)
 
         for post in new_posts:
             content = msg_format.format(
@@ -508,65 +632,22 @@ class WeiboMonitor(Star):
                 weibo=post["text"],
                 link=post["link"],
             )
-            image_urls: List[str] = post.get("image_urls") or []
-            video_url: Optional[str] = post.get("video_url")
-            tmp_files: List[str] = []
+            screenshot_path = await self._take_screenshot(post["link"]) if enable_screenshot else None
+            text_chain = self._build_text_chain(content, screenshot_path)
+            media_chain = await self._build_media_chain(post, enable_images, enable_videos)
 
-            try:
-                # 根据媒体类型构建消息
-                if video_url:
-                    # AstrBot 文档建议视频优先使用 URL 发送，避免 fromFileSystem
-                    # 受限于机器人端文件系统可见性，且规避延迟读取临时文件导致的 ENOENT。
-                    media_components = [Video.fromURL(video_url)]
-                    nodes_list = [Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)])]
-                    if media_components:
-                        nodes_list.append(Node(uin="0", name=post.get("username", "微博"), content=media_components))
-                    chain = MessageChain()
-                    chain.chain.append(Nodes(nodes=nodes_list))
-                elif image_urls:
-                    # 文字+图片：合并转发
-                    img_components = []
-                    for img_url in image_urls:
-                        img_path = await self._download_to_tmp(img_url, ".jpg")
-                        if img_path:
-                            tmp_files.append(img_path)
-                            img_components.append(Image.fromFileSystem(img_path))
-                    nodes_list = [Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)])]
-                    if img_components:
-                        nodes_list.append(Node(uin="0", name=post.get("username", "微博"), content=img_components))
-                    chain = MessageChain()
-                    chain.chain.append(Nodes(nodes=nodes_list))
-                else:
-                    # 纯文字：单 Node 转发
-                    chain = MessageChain()
-                    chain.chain.append(Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)]))
+            sent_count = 0
+            for target in targets:
+                try:
+                    await self.context.send_message(target, text_chain)
+                    if media_chain:
+                        await self.context.send_message(target, media_chain)
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"WeiboMonitor: 推送到 {target} 失败: {e}")
 
-                # 截图开关独立：无论何种媒体类型，开启时额外附加截图
-                if enable_screenshot:
-                    screenshot_path = await self._take_screenshot(post["link"])
-                    if screenshot_path:
-                        tmp_files.append(screenshot_path)
-                        try:
-                            chain.chain.append(Image.fromFileSystem(screenshot_path))
-                        except Exception as e:
-                            logger.warning(f"WeiboMonitor: 截图附加失败: {e}")
-
-                sent_count = 0
-                for target in targets:
-                    try:
-                        await self.context.send_message(target, chain)
-                        sent_count += 1
-                    except Exception as e:
-                        logger.error(f"WeiboMonitor: 推送到 {target} 失败: {e}")
-
-                if sent_count > 0:
-                    logger.info(f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新")
-            finally:
-                for f in tmp_files:
-                    try:
-                        os.unlink(f)
-                    except Exception:
-                        pass
+            if sent_count > 0:
+                logger.info(f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新")
 
     async def parse_uid(self, url: str) -> Optional[str]:
         url = url.strip()
@@ -687,13 +768,43 @@ class WeiboMonitor(Star):
                 logger.info(f"WeiboMonitor: 已同步会话初始状态，UID {uid} ({username})，当前最新 ID: {latest_id}")
         return []
 
+    def _extract_media_from_mblog(self, mblog: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
+        image_urls: List[str] = []
+        video_url: Optional[str] = None
+        seen_images: set[str] = set()
+
+        candidate_mblogs: List[Dict[str, Any]] = [mblog]
+        retweeted_status = mblog.get("retweeted_status")
+        if isinstance(retweeted_status, dict):
+            candidate_mblogs.append(retweeted_status)
+
+        for candidate in candidate_mblogs:
+            pics = candidate.get("pics") or []
+            for pic in pics:
+                if not isinstance(pic, dict):
+                    continue
+                image_url = (pic.get("large") or {}).get("url")
+                if image_url and image_url not in seen_images:
+                    seen_images.add(image_url)
+                    image_urls.append(image_url)
+
+            if video_url:
+                continue
+
+            page_info = candidate.get("page_info") or {}
+            if page_info.get("type") == "video":
+                media_info = page_info.get("media_info") or {}
+                video_url = media_info.get("stream_url_hd") or media_info.get("stream_url")
+
+        return image_urls, video_url
+
     def _collect_new_posts(self, uid: str, valid_mblogs: List[Dict[str, Any]], 
                           last_id: int, force_fetch: bool, 
                           username: str) -> List[Dict[str, Any]]:
         new_posts: List[Dict[str, Any]] = []
-        filter_keywords = self.config.get("filter_keywords", [])
-        send_original = self.config.get("send_original", True)
-        send_forward = self.config.get("send_forward", True)
+        filter_keywords = self.content_config.get("filter_keywords", [])
+        send_original = self.content_config.get("send_original", True)
+        send_forward = self.content_config.get("send_forward", True)
         
         for mblog in valid_mblogs:
             current_id_val = mblog.get("id")
@@ -718,7 +829,7 @@ class WeiboMonitor(Star):
             if self._has_filter_keyword(text, filter_keywords, current_id):
                 continue
 
-            whitelist_keywords = self.config.get("whitelist_keywords", [])
+            whitelist_keywords = self.content_config.get("whitelist_keywords", [])
             if whitelist_keywords and not any(kw and kw in text for kw in whitelist_keywords):
                 logger.info(f"WeiboMonitor: 微博 {current_id} 不含白名单关键词，已跳过推送")
                 continue
@@ -729,16 +840,7 @@ class WeiboMonitor(Star):
                 continue
             link = f"{WEIBO_WEB_BASE}/{uid}/{bid}"
 
-            # 提取图片列表
-            pics = mblog.get("pics") or []
-            image_urls = [p["large"]["url"] for p in pics if isinstance(p, dict) and p.get("large", {}).get("url")]
-
-            # 提取视频URL
-            video_url = None
-            page_info = mblog.get("page_info") or {}
-            if page_info.get("type") == "video":
-                media_info = page_info.get("media_info") or {}
-                video_url = media_info.get("stream_url_hd") or media_info.get("stream_url")
+            image_urls, video_url = self._extract_media_from_mblog(mblog)
 
             new_posts.append({"text": text, "link": link, "username": username,
                                "image_urls": image_urls, "video_url": video_url})

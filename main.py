@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register, StarTools
-from astrbot.api.message_components import Image
+from astrbot.api.message_components import Image, Node, Nodes, Plain, Video
 from astrbot.api import logger
 from bs4 import BeautifulSoup
 
@@ -163,7 +163,7 @@ class WeiboMonitor(Star):
         targets_raw = self.config.get("target_conversation_id", [])
         if isinstance(targets_raw, str):
             return [t.strip() for t in targets_raw.split(",") if t.strip()]
-        
+
         targets = []
         if isinstance(targets_raw, list):
             for item in targets_raw:
@@ -286,42 +286,9 @@ class WeiboMonitor(Star):
         latest_posts = await self.check_weibo(uid, force_fetch=True)
         if latest_posts:
             post = latest_posts[0]
-            content = msg_format.format(
-                name=post.get("username", "未知用户"),
-                weibo=post["text"],
-                link=post["link"],
-            )
-
-            enable_screenshot = self.config.get("weibo_screenshot", True)
-            screenshot_path = await self._take_screenshot(post["link"]) if enable_screenshot else None
-
-            chain = MessageChain().message(content)
-            if screenshot_path:
-                try:
-                    # 修复：将截图对象直接追加到消息链列表中
-                    chain.chain.append(Image.fromFileSystem(screenshot_path))
-                except Exception as e:
-                    logger.warning(f"WeiboMonitor: 截图附加到消息链失败: {e}")
-
             actual_targets = targets if targets else [event.unified_msg_origin]
-            sent_count = 0
-            for target in actual_targets:
-                try:
-                    await self.context.send_message(target, chain)
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
-
-            if screenshot_path:
-                try:
-                    os.unlink(screenshot_path)
-                except Exception:
-                    pass
-
-            if sent_count > 0:
-                yield event.plain_result(f"✅ {post.get('username')} 已成功发送最新动态。")
-            else:
-                yield event.plain_result(f"❌ {post.get('username')} 发送动态失败。")
+            await self._send_new_posts([post], actual_targets, msg_format)
+            yield event.plain_result(f"✅ {post.get('username')} 已成功发送最新动态。")
         else:
             yield event.plain_result(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -356,42 +323,9 @@ class WeiboMonitor(Star):
             latest_posts = await self.check_weibo(uid, force_fetch=True)
             if latest_posts:
                 post = latest_posts[0]
-                content = msg_format.format(
-                    name=post.get("username", "未知用户"),
-                    weibo=post["text"],
-                    link=post["link"],
-                )
-
-                enable_screenshot = self.config.get("weibo_screenshot", True)
-                screenshot_path = await self._take_screenshot(post["link"]) if enable_screenshot else None
-
-                chain = MessageChain().message(content)
-                if screenshot_path:
-                    try:
-                        # 修复：将截图对象直接追加到消息链列表中
-                        chain.chain.append(Image.fromFileSystem(screenshot_path))
-                    except Exception as e:
-                        logger.warning(f"WeiboMonitor: 截图附加到消息链失败: {e}")
-
                 actual_targets = targets if targets else [event.unified_msg_origin]
-                sent_count = 0
-                for target in actual_targets:
-                    try:
-                        await self.context.send_message(target, chain)
-                        sent_count += 1
-                    except Exception as e:
-                        logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
-
-                if screenshot_path:
-                    try:
-                        os.unlink(screenshot_path)
-                    except Exception:
-                        pass
-
-                if sent_count > 0:
-                    results.append(f"✅ {post.get('username')} 已成功发送最新动态。")
-                else:
-                    results.append(f"❌ {post.get('username')} 发送动态失败。")
+                await self._send_new_posts([post], actual_targets, msg_format)
+                results.append(f"✅ {post.get('username')} 已成功发送最新动态。")
             else:
                 results.append(f"ℹ️ UID {uid} 未获取到有效微博。")
 
@@ -453,7 +387,7 @@ class WeiboMonitor(Star):
                     urls.append(item_str)
         return urls
 
-    async def _process_monitor_cycle(self, urls: List[str], base_req_interval: int, req_jitter: int, 
+    async def _process_monitor_cycle(self, urls: List[str], base_req_interval: int, req_jitter: int,
                                    targets: List[str], msg_format: str):
         for i, url in enumerate(urls):
             try:
@@ -551,6 +485,20 @@ class WeiboMonitor(Star):
                 pass
             return None
 
+    async def _download_to_tmp(self, url: str, suffix: str) -> Optional[str]:
+        """下载媒体文件到临时文件，返回路径"""
+        try:
+            resp = await self.client.get(url, headers=self.get_headers(), follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp.write(resp.content)
+            tmp.close()
+            return tmp.name
+        except Exception as e:
+            logger.error(f"WeiboMonitor: 下载媒体失败 ({url}): {e}")
+            return None
+
     async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str):
         enable_screenshot = self.config.get("weibo_screenshot", True)
 
@@ -560,37 +508,68 @@ class WeiboMonitor(Star):
                 weibo=post["text"],
                 link=post["link"],
             )
+            image_urls: List[str] = post.get("image_urls") or []
+            video_url: Optional[str] = post.get("video_url")
+            tmp_files: List[str] = []
 
-            screenshot_path: Optional[str] = None
-            if enable_screenshot:
-                screenshot_path = await self._take_screenshot(post["link"])
+            try:
+                # 根据媒体类型构建消息
+                if video_url:
+                    # 文字+视频：合并转发
+                    video_path = await self._download_to_tmp(video_url, ".mp4")
+                    media_components = []
+                    if video_path:
+                        tmp_files.append(video_path)
+                        media_components.append(Video.fromFileSystem(video_path))
+                    nodes_list = [Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)])]
+                    if media_components:
+                        nodes_list.append(Node(uin="0", name=post.get("username", "微博"), content=media_components))
+                    chain = MessageChain()
+                    chain.chain.append(Nodes(nodes=nodes_list))
+                elif image_urls:
+                    # 文字+图片：合并转发
+                    img_components = []
+                    for img_url in image_urls:
+                        img_path = await self._download_to_tmp(img_url, ".jpg")
+                        if img_path:
+                            tmp_files.append(img_path)
+                            img_components.append(Image.fromFileSystem(img_path))
+                    nodes_list = [Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)])]
+                    if img_components:
+                        nodes_list.append(Node(uin="0", name=post.get("username", "微博"), content=img_components))
+                    chain = MessageChain()
+                    chain.chain.append(Nodes(nodes=nodes_list))
+                else:
+                    # 纯文字：单 Node 转发
+                    chain = MessageChain()
+                    chain.chain.append(Node(uin="0", name=post.get("username", "微博"), content=[Plain(content)]))
 
-            chain = MessageChain().message(content)
-            if screenshot_path:
-                try:
-                    # 修复：将截图对象直接追加到消息链列表中
-                    chain.chain.append(Image.fromFileSystem(screenshot_path))
-                except Exception as e:
-                    logger.warning(f"WeiboMonitor: 截图附加到消息链失败: {e}")
+                # 截图开关独立：无论何种媒体类型，开启时额外附加截图
+                if enable_screenshot:
+                    screenshot_path = await self._take_screenshot(post["link"])
+                    if screenshot_path:
+                        tmp_files.append(screenshot_path)
+                        try:
+                            chain.chain.append(Image.fromFileSystem(screenshot_path))
+                        except Exception as e:
+                            logger.warning(f"WeiboMonitor: 截图附加失败: {e}")
 
-            sent_count = 0
-            for target in targets:
-                try:
-                    await self.context.send_message(target, chain)
-                    sent_count += 1
-                except Exception as e:
-                    logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+                sent_count = 0
+                for target in targets:
+                    try:
+                        await self.context.send_message(target, chain)
+                        sent_count += 1
+                    except Exception as e:
+                        logger.error(f"WeiboMonitor: 推送到 {target} 失败: {e}")
 
-            if screenshot_path:
-                try:
-                    os.unlink(screenshot_path)
-                except Exception:
-                    pass
-
-            if sent_count > 0:
-                logger.info(
-                    f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新"
-                )
+                if sent_count > 0:
+                    logger.info(f"WeiboMonitor: 已向 {sent_count}/{len(targets)} 个目标推送 {post.get('username')} 的更新")
+            finally:
+                for f in tmp_files:
+                    try:
+                        os.unlink(f)
+                    except Exception:
+                        pass
 
     async def parse_uid(self, url: str) -> Optional[str]:
         url = url.strip()
@@ -742,12 +721,30 @@ class WeiboMonitor(Star):
             if self._has_filter_keyword(text, filter_keywords, current_id):
                 continue
 
+            whitelist_keywords = self.config.get("whitelist_keywords", [])
+            if whitelist_keywords and not any(kw and kw in text for kw in whitelist_keywords):
+                logger.info(f"WeiboMonitor: 微博 {current_id} 不含白名单关键词，已跳过推送")
+                continue
+
             bid = mblog.get("bid")
             if not bid:
                 logger.debug(f"WeiboMonitor: 微博 {current_id} 缺少bid字段，已跳过")
                 continue
             link = f"{WEIBO_WEB_BASE}/{uid}/{bid}"
-            new_posts.append({"text": text, "link": link, "username": username})
+
+            # 提取图片列表
+            pics = mblog.get("pics") or []
+            image_urls = [p["large"]["url"] for p in pics if isinstance(p, dict) and p.get("large", {}).get("url")]
+
+            # 提取视频URL
+            video_url = None
+            page_info = mblog.get("page_info") or {}
+            if page_info.get("type") == "video":
+                media_info = page_info.get("media_info") or {}
+                video_url = media_info.get("stream_url_hd") or media_info.get("stream_url")
+
+            new_posts.append({"text": text, "link": link, "username": username,
+                               "image_urls": image_urls, "video_url": video_url})
 
             if force_fetch:
                 break

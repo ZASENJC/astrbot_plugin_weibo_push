@@ -6,6 +6,13 @@
     "description": "微博用户主页链接",
     "hint": "可以填写多个，例如: https://weibo.com/u/1234567890"
   },
+  "target_conversation_id": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "推送目标会话 ID",
+    "hint": "可以填写多个。通过指令 /get_umo 获取当前会话 ID"
+  },
   "check_interval": {
     "type": "int",
     "default": 10,
@@ -29,13 +36,6 @@
     "description": "请求间隔随机浮动（秒）",
     "hint": "实际请求间隔会在 [间隔-浮动, 间隔+浮动] 范围内随机选择。设置为0则不使用随机性。"
   },
-  "target_conversation_id": {
-    "type": "list",
-    "item_type": "string",
-    "default": [],
-    "description": "推送目标会话 ID",
-    "hint": "可以填写多个。通过指令 /get_umo 获取当前会话 ID"
-  },
   "weibo_cookie": {
     "type": "string",
     "default": "",
@@ -54,6 +54,13 @@
     "default": [],
     "description": "屏蔽词列表",
     "hint": "如果微博正文包含这些词，将不会被推送。例如: 推广, 广告"
+  },
+  "whitelist_keywords": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "关键词白名单",
+    "hint": "填写后，只有微博正文包含这些词中的任意一个才会被推送。留空则不启用白名单过滤。例如: 新歌, 演唱会"
   },
   "send_original": {
     "type": "bool",

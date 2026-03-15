@@ -129,14 +129,18 @@
       },
       "filter_keywords": {
         "type": "list",
-        "item_type": "string",
+        "items": {
+          "type": "string"
+        },
         "default": [],
         "description": "屏蔽关键词",
         "hint": "正文命中任一词时不推送。"
       },
       "whitelist_keywords": {
         "type": "list",
-        "item_type": "string",
+        "items": {
+          "type": "string"
+        },
         "default": [],
         "description": "白名单关键词",
         "hint": "配置后，正文或话题命中任一关键词才会推送。"

@@ -408,6 +408,8 @@ class Main(Star):
     async def _request_json(self, url: str, *, uid: str = "") -> Optional[Dict[str, Any]]:
         try:
             response = await self.client.get(url, headers=self.get_headers(uid))
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             logger.error(f"WeiboMonitor: 请求失败 {url}: {err}")
             return None
@@ -638,6 +640,8 @@ class Main(Star):
                 posts = await self.check_weibo(rule.uid)
                 if posts:
                     await self._send_new_posts(posts, list(rule.targets), self.message_template)
+            except asyncio.CancelledError:
+                raise
             except Exception as err:
                 logger.error(f"WeiboMonitor: 检查 UID {rule.uid} 失败: {err}")
 
@@ -1072,6 +1076,8 @@ class Main(Star):
             if posts:
                 posts.reverse()
             return posts
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             logger.error(f"WeiboMonitor: 检查 UID {uid} 异常: {err}")
             return []
@@ -1346,7 +1352,12 @@ class Main(Star):
 
             try:
                 text_chain = self._build_text_chain(rendered, screenshot_path)
-                media_chain, media_cache_paths = await self._build_media_chain(post, send_images, send_videos)
+                media_chain, media_cache_paths = await self._build_media_chain(
+                    post,
+                    rendered,
+                    send_images,
+                    send_videos,
+                )
                 cached_paths.extend(media_cache_paths)
 
                 text_success, text_failure = await self._send_chain_to_targets(
@@ -1391,36 +1402,58 @@ class Main(Star):
             for post in posts:
                 rendered = self._render_post_text(template, post)
 
-                components: List[Any] = [Plain(rendered)]
+                text_components: List[Any] = [Plain(rendered)]
                 screenshot_path = await self._take_screenshot(post.link) if send_screenshot else None
                 if screenshot_path:
                     self._mark_cache_file_active(screenshot_path)
                     cached_paths.append(screenshot_path)
                     try:
-                        components.append(Image.fromFileSystem(screenshot_path))
+                        text_components.append(Image.fromFileSystem(screenshot_path))
                     except Exception as err:
                         logger.warning(f"WeiboMonitor: 合并转发附加截图失败: {err}")
 
                 if post.video_url and send_videos:
-                    components.append(Video.fromURL(post.video_url))
+                    # 视频与文字拆分为不同节点，避免部分客户端在详情中吞掉文字
+                    nodes.append(
+                        Node(
+                            uin="0",
+                            name=post.username,
+                            content=text_components,
+                        )
+                    )
+                    nodes.append(
+                        Node(
+                            uin="0",
+                            name=post.username,
+                            content=[Video.fromURL(post.video_url)],
+                        )
+                    )
                 elif post.image_urls and send_images:
+                    media_components = list(text_components)
                     for image_url in post.image_urls:
                         image_path = await self._download_to_cache(image_url, ".jpg", "img")
                         if not image_path:
                             continue
                         cached_paths.append(image_path)
                         try:
-                            components.append(Image.fromFileSystem(image_path))
+                            media_components.append(Image.fromFileSystem(image_path))
                         except Exception as err:
                             logger.warning(f"WeiboMonitor: 合并转发附加图片失败 {image_path}: {err}")
-
-                nodes.append(
-                    Node(
-                        uin="0",
-                        name=post.username,
-                        content=components,
+                    nodes.append(
+                        Node(
+                            uin="0",
+                            name=post.username,
+                            content=media_components,
+                        )
                     )
-                )
+                else:
+                    nodes.append(
+                        Node(
+                            uin="0",
+                            name=post.username,
+                            content=text_components,
+                        )
+                    )
 
             if not nodes:
                 return summary
@@ -1464,6 +1497,7 @@ class Main(Star):
     async def _build_media_chain(
         self,
         post: WeiboPost,
+        rendered_text: str,
         send_images: bool,
         send_videos: bool,
     ) -> Tuple[Optional[MessageChain], List[str]]:
@@ -1471,6 +1505,13 @@ class Main(Star):
         cached_paths: List[str] = []
 
         if post.video_url and send_videos:
+            nodes.append(
+                Node(
+                    uin="0",
+                    name=post.username,
+                    content=[Plain(rendered_text)],
+                )
+            )
             nodes.append(
                 Node(
                     uin="0",
@@ -1551,6 +1592,8 @@ class Main(Star):
             cache_path.write_bytes(response.content)
             self._mark_cache_file_active(str(cache_path))
             return str(cache_path)
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             logger.error(f"WeiboMonitor: 下载媒体失败 {url}: {err}")
             try:
@@ -1618,6 +1661,8 @@ class Main(Star):
                 await browser.close()
 
             return str(screenshot_path)
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             logger.error(f"WeiboMonitor: 截图失败 {url}: {err}")
             try:

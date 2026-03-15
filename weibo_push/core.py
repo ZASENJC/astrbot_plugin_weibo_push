@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Image, Node, Nodes, Plain, Video
 from astrbot.api.star import Context, Star, StarTools, register
 from bs4 import BeautifulSoup
@@ -456,7 +456,6 @@ class WeiboMonitor(Star):
         await self.client.aclose()
         logger.info("WeiboMonitor: 插件已停止")
 
-    @filter.command("weibo_export")
     async def weibo_export(self, event: AstrMessageEvent):
         try:
             config_json = json.dumps(self.config, ensure_ascii=False)
@@ -470,7 +469,6 @@ class WeiboMonitor(Star):
             logger.error(f"WeiboMonitor: 导出配置失败: {err}")
             yield event.plain_result(f"❌ 导出失败: {err}")
 
-    @filter.command("weibo_import")
     async def weibo_import(self, event: AstrMessageEvent, config_str: str = ""):
         if not config_str:
             yield event.plain_result("❌ 缺少配置字符串。用法: /weibo_import <配置字符串>")
@@ -509,7 +507,6 @@ class WeiboMonitor(Star):
             logger.error(f"WeiboMonitor: 导入配置失败: {err}")
             yield event.plain_result(f"❌ 导入失败: {err}")
 
-    @filter.command("weibo_verify")
     async def weibo_verify(self, event: AstrMessageEvent):
         cookie = self.auth_config.get("weibo_cookie", "")
         if not cookie:
@@ -532,7 +529,6 @@ class WeiboMonitor(Star):
         screen_name = user.get("screen_name") or "未知"
         yield event.plain_result(f"✅ Cookie 有效，当前账号: {screen_name} (UID: {user_id})")
 
-    @filter.command("weibo_check")
     async def weibo_check(self, event: AstrMessageEvent):
         rules = await self._resolve_monitor_rules(force_following_refresh=True)
         if not rules:
@@ -554,7 +550,6 @@ class WeiboMonitor(Star):
             f"✅ 推送完成：成功目标 {result['target_success']}，失败目标 {result['target_failure']}。"
         )
 
-    @filter.command("weibo_check_all")
     async def weibo_check_all(self, event: AstrMessageEvent):
         rules = await self._resolve_monitor_rules(force_following_refresh=True)
         if not rules:

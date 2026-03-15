@@ -48,4 +48,3 @@ AstrBot 的微博动态监控与推送插件，支持订阅规则、关注列表
 ## 官方参考
 
 - [AstrBot 文档首页](https://docs.astrbot.app/)
-- [插件开发文档](https://docs.astrbot.app/plugin-dev/)

@@ -44,10 +44,10 @@ SUPPORTED_CONFIG_ROOT_KEYS = {
     "runtime_settings",
 }
 
-UID_IN_URL_PATTERN = re.compile(r"(?:weibo|m\\.weibo)\\.(?:com|cn)/(?:u|profile)/(\\d+)")
+UID_IN_URL_PATTERN = re.compile(r"(?:weibo|m\.weibo)\.(?:com|cn)/(?:u|profile)/(\d+)")
 TOPIC_PATTERN = re.compile(r"#([^#]{1,80})#")
-SCHEME_UID_PATTERN = re.compile(r"(?:uid=|/u/)(\\d+)")
-MBLOG_UID_PATTERN = re.compile(r"/(\\d+)/")
+SCHEME_UID_PATTERN = re.compile(r"(?:uid=|/u/)(\d+)")
+MBLOG_UID_PATTERN = re.compile(r"/(\d+)/")
 RESERVED_PATH_SEGMENTS = {"p", "u", "profile", "n", "status", "detail", "api"}
 FOLLOWING_CONTAINER_TEMPLATES = (
     "231051_-_followers_-_{uid}",
@@ -995,7 +995,7 @@ class Main(Star):
         if match:
             return match.group(1)
 
-        match = re.search(r"/u/(\\d+)", final_url)
+        match = re.search(r"/u/(\d+)", final_url)
         if match:
             return match.group(1)
 

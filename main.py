@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import json
 import random
 import re
@@ -897,6 +898,56 @@ class WeiboDeliveryService:
         self._retry_manager = retry_manager
         self._cache_manager = cache_manager
         self._auth_config_getter = auth_config_getter
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._browser_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        async with self._browser_lock:
+            browser = self._browser
+            playwright = self._playwright
+            self._browser = None
+            self._playwright = None
+
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+
+    async def _ensure_browser(self) -> Optional[Any]:
+        if self._browser is not None and self._playwright is not None:
+            return self._browser
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.debug("WeiboMonitor: playwright 未安装，跳过截图")
+            return None
+
+        async with self._browser_lock:
+            if self._browser is not None and self._playwright is not None:
+                return self._browser
+
+            try:
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
+            except Exception:
+                if self._playwright is not None:
+                    try:
+                        await self._playwright.stop()
+                    except Exception:
+                        pass
+                self._playwright = None
+                self._browser = None
+                raise
+
+            return self._browser
 
     async def send_new_posts(self, posts: List[WeiboPost], targets: List[str], template: str) -> Dict[str, int]:
         content_config = self._content_config_getter()
@@ -1208,10 +1259,8 @@ class WeiboDeliveryService:
             return None
 
     async def take_screenshot(self, url: str) -> Optional[str]:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            logger.debug("WeiboMonitor: playwright 未安装，跳过截图")
+        browser = await self._ensure_browser()
+        if browser is None:
             return None
 
         screenshot_config = self._screenshot_config_getter()
@@ -1227,44 +1276,41 @@ class WeiboDeliveryService:
 
         screenshot_path = self._cache_manager.create_cache_path(f".{image_type}", "screenshot")
 
+        page = None
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-                page = await browser.new_page(viewport={"width": width, "height": height})
+            page = await browser.new_page(viewport={"width": width, "height": height})
 
-                cookie_str = self._auth_config_getter().get("weibo_cookie", "")
-                if cookie_str:
-                    cookies = []
-                    for part in cookie_str.split(";"):
-                        part = part.strip()
-                        if "=" not in part:
-                            continue
-                        name, _, value = part.partition("=")
-                        cookies.append(
-                            {
-                                "name": name.strip(),
-                                "value": value.strip(),
-                                "domain": ".weibo.com",
-                                "path": "/",
-                            }
-                        )
-                    if cookies:
-                        await page.context.add_cookies(cookies)
+            cookie_str = self._auth_config_getter().get("weibo_cookie", "")
+            if cookie_str:
+                cookies = []
+                for part in cookie_str.split(";"):
+                    part = part.strip()
+                    if "=" not in part:
+                        continue
+                    name, _, value = part.partition("=")
+                    cookies.append(
+                        {
+                            "name": name.strip(),
+                            "value": value.strip(),
+                            "domain": ".weibo.com",
+                            "path": "/",
+                        }
+                    )
+                if cookies:
+                    await page.context.add_cookies(cookies)
 
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(wait_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(wait_ms)
 
-                shot_args: Dict[str, Any] = {
-                    "path": str(screenshot_path),
-                    "full_page": full_page,
-                    "type": image_type,
-                }
-                if image_type == "jpeg":
-                    shot_args["quality"] = quality
+            shot_args: Dict[str, Any] = {
+                "path": str(screenshot_path),
+                "full_page": full_page,
+                "type": image_type,
+            }
+            if image_type == "jpeg":
+                shot_args["quality"] = quality
 
-                await page.screenshot(**shot_args)
-                await browser.close()
-
+            await page.screenshot(**shot_args)
             return str(screenshot_path)
         except asyncio.CancelledError:
             raise
@@ -1276,6 +1322,12 @@ class WeiboDeliveryService:
             except Exception:
                 pass
             return None
+        finally:
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
 
 class Main(Star):
@@ -1460,34 +1512,6 @@ class Main(Star):
             num = max_value
         return num
 
-    def _retry_enabled(self) -> bool:
-        return self.retry_manager.retry_enabled()
-
-    def _retry_max_attempts(self) -> int:
-        return self.retry_manager.retry_max_attempts()
-
-    def _retry_base_delay(self) -> int:
-        return self.retry_manager.retry_base_delay()
-
-    def _retry_max_delay(self) -> int:
-        return self.retry_manager.retry_max_delay()
-
-    def _retry_jitter(self) -> int:
-        return self.retry_manager.retry_jitter()
-
-    def _calculate_retry_delay(self, attempt: int) -> float:
-        return self.retry_manager.calculate_retry_delay(attempt)
-
-    async def _enqueue_retry(
-        self,
-        target: str,
-        chain: MessageChain,
-        attempt: int,
-        delay_seconds: float,
-        reason: str = "",
-    ) -> None:
-        await self.retry_manager.enqueue_retry(target, chain, attempt, delay_seconds, reason)
-
     async def _retry_worker(self) -> None:
         await self.retry_manager.retry_worker(
             is_running=lambda: self.running,
@@ -1525,11 +1549,22 @@ class Main(Star):
             return max(minimum, base)
         return max(minimum, random.randint(base - jitter, base + jitter))
 
-    def get_headers(self, uid: str = "") -> Dict[str, str]:
-        return self.weibo_http.get_headers(uid)
+    def _get_bot_owner_id(self) -> str:
+        try:
+            cfg = self.context.get_config()
+            admins = cfg.get("admins_id", [])
+        except Exception:
+            admins = []
 
-    async def _request_json(self, url: str, *, uid: str = "") -> Optional[Dict[str, Any]]:
-        return await self.weibo_http.request_json(url, uid=uid)
+        if isinstance(admins, list) and admins:
+            return str(admins[0])
+        return ""
+
+    def _is_bot_owner(self, event: AstrMessageEvent) -> bool:
+        owner_id = self._get_bot_owner_id()
+        if not owner_id:
+            return False
+        return str(event.get_sender_id()) == owner_id
 
     async def terminate(self):
         self.running = False
@@ -1548,11 +1583,17 @@ class Main(Star):
             except asyncio.CancelledError:
                 pass
 
+        await self.delivery_service.close()
         await self.client.aclose()
         logger.info("WeiboMonitor: 插件已停止")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("weibo_export")
     async def weibo_export(self, event: AstrMessageEvent):
+        if not self._is_bot_owner(event):
+            yield event.plain_result("❌ 此指令仅机器人主人可用。")
+            return
+
         try:
             config_json = json.dumps(self.config, ensure_ascii=False)
             encoded = base64.b64encode(config_json.encode("utf-8")).decode("utf-8")
@@ -1565,18 +1606,38 @@ class Main(Star):
             logger.error(f"WeiboMonitor: 导出配置失败: {err}")
             yield event.plain_result(f"❌ 导出失败: {err}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("weibo_import")
     async def weibo_import(self, event: AstrMessageEvent, config_str: str = ""):
+        if not self._is_bot_owner(event):
+            yield event.plain_result("❌ 此指令仅机器人主人可用。")
+            return
+
         if not config_str:
             yield event.plain_result("❌ 缺少配置字符串。用法: /weibo_import <配置字符串>")
             return
 
         try:
+            new_config: Dict[str, Any]
             try:
-                decoded = base64.b64decode(config_str).decode("utf-8")
-                new_config = json.loads(decoded)
-            except Exception:
-                new_config = json.loads(config_str)
+                decoded_bytes = base64.b64decode(config_str, validate=True)
+            except (binascii.Error, ValueError):
+                decoded_bytes = None
+
+            if decoded_bytes is not None:
+                try:
+                    decoded = decoded_bytes.decode("utf-8")
+                except UnicodeDecodeError as err:
+                    raise ValueError("Base64 配置不是有效的 UTF-8 文本") from err
+                try:
+                    new_config = json.loads(decoded)
+                except json.JSONDecodeError as err:
+                    raise ValueError("Base64 解码后的内容不是合法 JSON") from err
+            else:
+                try:
+                    new_config = json.loads(config_str)
+                except json.JSONDecodeError as err:
+                    raise ValueError("配置字符串既不是合法 Base64(JSON) 也不是合法 JSON") from err
 
             if not isinstance(new_config, dict):
                 raise ValueError("配置必须是对象")
@@ -1612,7 +1673,7 @@ class Main(Star):
             return
 
         yield event.plain_result("🔍 正在验证微博 Cookie...")
-        payload = await self._request_json(WEIBO_CONFIG_API)
+        payload = await self.weibo_http.request_json(WEIBO_CONFIG_API)
         if not payload:
             yield event.plain_result("❌ 验证失败：接口无响应或返回异常。")
             return
@@ -1629,7 +1690,7 @@ class Main(Star):
 
     @filter.command("weibo_check")
     async def weibo_check(self, event: AstrMessageEvent):
-        rules = await self._resolve_monitor_rules(force_following_refresh=True)
+        rules = await self.rule_resolver.resolve_monitor_rules(force_following_refresh=True)
         if not rules:
             yield event.plain_result("❌ 没有可用的监控规则，请先配置订阅规则。")
             return
@@ -1640,7 +1701,7 @@ class Main(Star):
             yield event.plain_result(f"ℹ️ UID {rule.uid} 未获取到可推送微博。")
             return
 
-        result = await self._send_new_posts(posts[:1], list(rule.targets), self.message_template)
+        result = await self.delivery_service.send_new_posts(posts[:1], list(rule.targets), self.message_template)
         if result["posts_sent"] == 0:
             yield event.plain_result("❌ 已抓取到微博，但推送失败，请检查日志。")
             return
@@ -1651,7 +1712,7 @@ class Main(Star):
 
     @filter.command("weibo_check_all")
     async def weibo_check_all(self, event: AstrMessageEvent):
-        rules = await self._resolve_monitor_rules(force_following_refresh=True)
+        rules = await self.rule_resolver.resolve_monitor_rules(force_following_refresh=True)
         if not rules:
             yield event.plain_result("❌ 没有可用的监控规则，请先配置订阅规则。")
             return
@@ -1676,7 +1737,7 @@ class Main(Star):
                 summaries.append(f"ℹ️ UID {rule.uid} 未获取到可推送微博")
                 continue
 
-            result = await self._send_new_posts(posts[:1], list(rule.targets), self.message_template)
+            result = await self.delivery_service.send_new_posts(posts[:1], list(rule.targets), self.message_template)
             if result["posts_sent"] == 0:
                 summaries.append(f"❌ UID {rule.uid} 推送失败")
             elif result["target_failure"] > 0:
@@ -1704,12 +1765,12 @@ class Main(Star):
                 check_jitter = self._safe_int(self.runtime_config.get("check_interval_jitter", 0), 0, min_value=0, max_value=180)
                 sleep_minutes = self._pick_interval(check_interval, check_jitter, minimum=1)
 
-                self._cleanup_cache()
+                self.cache_manager.cleanup()
 
                 if not cookie:
                     logger.warning("WeiboMonitor: 未配置微博 Cookie，跳过本轮检查。")
                 else:
-                    rules = await self._resolve_monitor_rules(force_following_refresh=False)
+                    rules = await self.rule_resolver.resolve_monitor_rules(force_following_refresh=False)
                     if not rules:
                         logger.debug("WeiboMonitor: 当前无可用监控规则")
                     else:
@@ -1739,66 +1800,15 @@ class Main(Star):
             try:
                 posts = await self.check_weibo(rule.uid)
                 if posts:
-                    await self._send_new_posts(posts, list(rule.targets), self.message_template)
+                    await self.delivery_service.send_new_posts(posts, list(rule.targets), self.message_template)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
                 logger.error(f"WeiboMonitor: 检查 UID {rule.uid} 失败: {err}")
 
-    async def _resolve_monitor_rules(self, force_following_refresh: bool) -> List[MonitorRule]:
-        return await self.rule_resolver.resolve_monitor_rules(force_following_refresh)
-
-    async def _resolve_manual_rules(self) -> List[MonitorRule]:
-        return await self.rule_resolver.resolve_manual_rules()
-
-    async def _resolve_auto_following_rules(self, force_following_refresh: bool) -> List[MonitorRule]:
-        return await self.rule_resolver.resolve_auto_following_rules(force_following_refresh)
-
-    async def _resolve_auto_following_source_uid(self, source: str) -> Optional[str]:
-        return await self.rule_resolver.resolve_auto_following_source_uid(source)
-
-    async def _fetch_login_uid(self) -> Optional[str]:
-        return await self.rule_resolver.fetch_login_uid()
-
-    async def _fetch_following_users(self, source_uid: str, max_pages: int) -> List[Dict[str, str]]:
-        return await self.rule_resolver.fetch_following_users(source_uid, max_pages)
-
-    async def _fetch_following_users_by_template(self, source_uid: str, template: str, max_pages: int) -> List[Dict[str, str]]:
-        return await self.rule_resolver.fetch_following_users_by_template(source_uid, template, max_pages)
-
-    def _extract_users_from_cards(self, cards: List[Dict[str, Any]]) -> Dict[str, str]:
-        return self.rule_resolver.extract_users_from_cards(cards)
-
-    async def _notify_following_changes(
-        self,
-        source_uid: str,
-        added: List[str],
-        removed: List[str],
-        name_map: Dict[str, str],
-        targets: List[str],
-        total_monitored: int,
-    ) -> None:
-        await self.rule_resolver.notify_following_changes(
-            source_uid=source_uid,
-            added=added,
-            removed=removed,
-            name_map=name_map,
-            targets=targets,
-            total_monitored=total_monitored,
-        )
-
-    async def parse_uid(self, source: str) -> Optional[str]:
-        return await self.rule_resolver.parse_uid(source)
-
-    def _extract_nickname_from_input(self, text: str) -> Optional[str]:
-        return self.rule_resolver.extract_nickname_from_input(text)
-
-    async def _resolve_uid_from_nickname(self, nickname: str) -> Optional[str]:
-        return await self.rule_resolver.resolve_uid_from_nickname(nickname)
-
     async def _fetch_weibo_cards(self, uid: str) -> List[Dict[str, Any]]:
         url = f"{WEIBO_API_BASE}?type=uid&value={uid}&containerid=107603{uid}"
-        payload = await self._request_json(url, uid=uid)
+        payload = await self.weibo_http.request_json(url, uid=uid)
         if not payload or payload.get("ok") != 1:
             return []
 
@@ -1814,16 +1824,13 @@ class Main(Star):
 
         return cards
 
-    def _extract_non_top_mblogs(self, cards: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], str]:
-        return self.weibo_parser.extract_non_top_mblogs(cards)
-
     async def check_weibo(self, uid: str, force_fetch: bool = False) -> List[WeiboPost]:
         try:
             cards = await self._fetch_weibo_cards(uid)
             if not cards:
                 return []
 
-            mblogs, username = self._extract_non_top_mblogs(cards)
+            mblogs, username = self.weibo_parser.extract_non_top_mblogs(cards)
             if not mblogs:
                 return []
 
@@ -1887,11 +1894,11 @@ class Main(Star):
             if (not is_forward) and not send_original:
                 continue
 
-            text = self._extract_post_text(mblog)
+            text = self.weibo_parser.extract_post_text(mblog)
             if self._contains_any_keyword(text, filter_keywords):
                 continue
 
-            topics = self._extract_topics(mblog)
+            topics = self.weibo_parser.extract_topics(mblog)
             if not self._passes_whitelist(text, topics, whitelist_keywords, whitelist_match_topics):
                 continue
 
@@ -1899,10 +1906,10 @@ class Main(Star):
             if not bid:
                 continue
 
-            post_uid = self._extract_uid_from_mblog(mblog) or uid
+            post_uid = self.weibo_parser.extract_uid_from_mblog(mblog) or uid
             link = f"{WEIBO_WEB_BASE}/{post_uid}/{bid}"
 
-            image_urls, video_url = self._extract_media(mblog)
+            image_urls, video_url = self.weibo_parser.extract_media(mblog)
             posts.append(
                 WeiboPost(
                     text=text,
@@ -1918,9 +1925,6 @@ class Main(Star):
                 break
 
         return posts
-
-    def _extract_uid_from_mblog(self, mblog: Dict[str, Any]) -> Optional[str]:
-        return self.weibo_parser.extract_uid_from_mblog(mblog)
 
     def _contains_any_keyword(self, text: str, keywords: List[str]) -> bool:
         return any(keyword and keyword in text for keyword in keywords)
@@ -1938,116 +1942,5 @@ class Main(Star):
             )
 
         return text_hit or topic_hit
-
-    def _extract_topics(self, mblog: Dict[str, Any]) -> List[str]:
-        return self.weibo_parser.extract_topics(mblog)
-
-    def _extract_media(self, mblog: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
-        return self.weibo_parser.extract_media(mblog)
-
-    def _extract_post_text(self, mblog: Dict[str, Any]) -> str:
-        return self.weibo_parser.extract_post_text(mblog)
-
-    def clean_text(self, text: Any) -> str:
-        return self.weibo_parser.clean_text(text)
-
-    async def _send_new_posts(self, posts: List[WeiboPost], targets: List[str], template: str) -> Dict[str, int]:
-        return await self.delivery_service.send_new_posts(posts, targets, template)
-
-    async def _send_new_posts_segmented(
-        self,
-        posts: List[WeiboPost],
-        targets: List[str],
-        template: str,
-        send_images: bool,
-        send_videos: bool,
-        send_screenshot: bool,
-        summary: Dict[str, int],
-    ) -> Dict[str, int]:
-        return await self.delivery_service.send_new_posts_segmented(
-            posts=posts,
-            targets=targets,
-            template=template,
-            send_images=send_images,
-            send_videos=send_videos,
-            send_screenshot=send_screenshot,
-            summary=summary,
-        )
-
-    async def _send_new_posts_merged_forward(
-        self,
-        posts: List[WeiboPost],
-        targets: List[str],
-        template: str,
-        send_images: bool,
-        send_videos: bool,
-        send_screenshot: bool,
-        summary: Dict[str, int],
-    ) -> Dict[str, int]:
-        return await self.delivery_service.send_new_posts_merged_forward(
-            posts=posts,
-            targets=targets,
-            template=template,
-            send_images=send_images,
-            send_videos=send_videos,
-            send_screenshot=send_screenshot,
-            summary=summary,
-        )
-
-    def _render_post_text(self, template: str, post: WeiboPost) -> str:
-        return self.delivery_service.render_post_text(template, post)
-
-    def _build_text_chain(self, content: str, screenshot_path: Optional[str]) -> MessageChain:
-        return self.delivery_service.build_text_chain(content, screenshot_path)
-
-    async def _build_media_chain(
-        self,
-        post: WeiboPost,
-        rendered_text: str,
-        send_images: bool,
-        send_videos: bool,
-    ) -> Tuple[Optional[MessageChain], List[str]]:
-        return await self.delivery_service.build_media_chain(post, rendered_text, send_images, send_videos)
-
-    async def _send_to_target_once(
-        self,
-        target: str,
-        chain: MessageChain,
-        reason: str = "",
-        attempt: int = 1,
-        is_retry: bool = False,
-    ) -> bool:
-        return await self.delivery_service.send_to_target_once(
-            target=target,
-            chain=chain,
-            reason=reason,
-            attempt=attempt,
-            is_retry=is_retry,
-        )
-
-    async def _send_chain_to_targets(self, targets: List[str], chain: MessageChain, reason: str = "") -> Tuple[int, int]:
-        return await self.delivery_service.send_chain_to_targets(targets, chain, reason)
-
-    async def _download_to_cache(self, url: str, suffix: str, prefix: str) -> Optional[str]:
-        return await self.delivery_service.download_to_cache(url, suffix, prefix)
-
-    async def _take_screenshot(self, url: str) -> Optional[str]:
-        return await self.delivery_service.take_screenshot(url)
-
-    def _create_cache_path(self, suffix: str, prefix: str) -> Path:
-        return self.cache_manager.create_cache_path(suffix, prefix)
-
-    def _mark_cache_file_active(self, path: Optional[str]) -> None:
-        self.cache_manager.mark_active(path)
-
-    def _mark_cache_file_inactive(self, path: Optional[str]) -> None:
-        self.cache_manager.mark_inactive(path)
-
-    async def _release_cached_files(self, paths: List[str]) -> None:
-        await self.cache_manager.release_cached_files(paths)
-
-    def _cleanup_cache(self) -> None:
-        self.cache_manager.cleanup()
-
 
 __all__ = ["Main"]

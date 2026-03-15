@@ -2,6 +2,23 @@
 
 仅记录独立发布后的版本更新。
 
+## v2.1.5 (2026-03-15)
+
+### Security
+
+- `/weibo_export` 与 `/weibo_import` 新增 `@filter.permission_type(filter.PermissionType.ADMIN)`。
+- 两个指令增加机器人主人校验，仅允许 `admins_id` 首位账号执行，阻断普通用户导入导出配置的越权风险。
+
+### Fixed
+
+- `weibo_import` 的 Base64/JSON 解析改为精确异常分支，不再使用宽泛 `except Exception` 回退，错误信息更明确。
+- `WeiboDeliveryService.take_screenshot` 增加 `page/browser` 显式 `finally` 关闭，避免异常分支资源泄露。
+- 截图链路改为复用单例 Browser，仅按次创建/关闭 `Page`，避免每条微博冷启动 Chromium 的性能开销。
+
+### Refactor
+
+- 删除 `Main` 中大批无意义透传方法，改为在调用点直接使用 `rule_resolver` / `delivery_service` / `weibo_parser`。
+
 ## v2.1.4 (2026-03-15)
 
 ### Changed

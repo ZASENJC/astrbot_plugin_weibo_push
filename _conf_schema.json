@@ -2,59 +2,104 @@
   "auth_settings": {
     "type": "object",
     "description": "认证信息",
-    "hint": "先填写微博 Cookie，否则插件无法抓取微博数据。",
+    "hint": "必须配置微博 Cookie，插件才能访问微博接口。",
     "items": {
       "weibo_cookie": {
         "type": "string",
         "default": "",
         "description": "微博 Cookie",
-        "hint": "必须配置微博 Cookie 才能正常抓取数据。"
+        "hint": "建议使用 m.weibo.cn 登录态 Cookie，并定期更新。"
       }
     }
   },
   "monitoring_settings": {
     "type": "object",
-    "description": "微博账号与推送范围",
-    "hint": "每条订阅规则同时定义“监控谁”和“发到哪些会话”。留空会话 ID 时，该微博默认不推送。",
+    "description": "监控规则",
+    "hint": "支持手动订阅规则 + 自动同步关注列表两种模式，可同时启用。",
     "items": {
       "subscription_rules": {
         "type": "template_list",
         "default": [],
-        "description": "订阅规则",
-        "hint": "推荐逐条添加。一个微博账号对应一条规则，便于管理和排查。",
+        "description": "手动订阅规则",
+        "hint": "每条规则监控一个微博账号，并指定允许接收推送的会话 ID。",
         "templates": {
           "subscription_rule": {
             "name": "微博订阅规则",
-            "hint": "只有填写在“允许接收推送的会话 ID”中的群聊或私聊，才会收到这个微博账号的更新。",
+            "hint": "source 支持 UID、微博主页链接、/n/用户名链接。",
             "items": {
               "source": {
                 "type": "string",
                 "default": "",
-                "description": "微博主页 / UID / 用户名链接",
-                "hint": "支持 UID、https://weibo.com/u/xxx、https://weibo.com/n/用户名。"
+                "description": "微博主页 / UID / 用户名",
+                "hint": "例如：1234567890 或 https://weibo.com/u/1234567890"
               },
               "allowed_targets": {
                 "type": "text",
                 "default": "",
                 "description": "允许接收推送的会话 ID",
-                "hint": "填写通过 /get_umo 获取到的会话 ID，支持英文逗号或换行分隔。留空则不推送。"
+                "hint": "支持英文逗号或换行分隔。会话 ID 可通过 AstrBot 内置 /sid 获取。"
               }
             }
           }
         }
+      },
+      "auto_following_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用关注列表自动监控"
+      },
+      "auto_following_source": {
+        "type": "string",
+        "default": "",
+        "description": "关注列表来源账号",
+        "hint": "留空时使用当前 Cookie 登录账号；也支持 UID / 微博链接。"
+      },
+      "auto_following_targets": {
+        "type": "text",
+        "default": "",
+        "description": "自动监控推送目标",
+        "hint": "自动纳入监控的关注账号，统一推送到这些会话 ID。"
+      },
+      "auto_following_refresh_interval": {
+        "type": "int",
+        "default": 30,
+        "description": "关注列表刷新间隔（分钟）",
+        "hint": "为了效率，刷新间隔内会复用缓存列表。"
+      },
+      "auto_following_max_pages": {
+        "type": "int",
+        "default": 3,
+        "description": "关注列表抓取页数",
+        "hint": "每页约 20 个账号。页数越大，覆盖更多关注，但请求更频繁。"
+      },
+      "auto_following_remove_unfollowed": {
+        "type": "bool",
+        "default": false,
+        "description": "取消关注后停止监控"
+      },
+      "auto_following_notify_changes": {
+        "type": "bool",
+        "default": true,
+        "description": "推送关注列表变更通知"
+      },
+      "auto_following_notify_targets": {
+        "type": "text",
+        "default": "",
+        "description": "关注变更通知目标",
+        "hint": "留空时复用 auto_following_targets。"
       }
     }
   },
   "content_settings": {
     "type": "object",
     "description": "推送内容",
-    "hint": "控制推送正文、媒体内容与过滤规则。",
+    "hint": "控制正文模板、媒体类型和过滤策略。",
     "items": {
       "message_format": {
         "type": "string",
-        "default": "🔔 {name} 发微博啦！\n\n{weibo}\n\n链接: {link}",
+        "default": "🔔 {name} 发微博啦！\\n\\n{weibo}\\n\\n话题: {topics}\\n链接: {link}",
         "description": "消息模板",
-        "hint": "支持变量: {name}（用户名）、{weibo}（正文）、{link}（链接）。"
+        "hint": "支持变量: {name}、{weibo}、{topics}、{link}。"
       },
       "send_images": {
         "type": "bool",
@@ -65,6 +110,12 @@
         "type": "bool",
         "default": true,
         "description": "推送微博视频"
+      },
+      "merge_forward_send": {
+        "type": "bool",
+        "default": false,
+        "description": "全部合并转发发送",
+        "hint": "关闭时按分段发送（正文后媒体）；开启时将本轮内容合并为一条转发消息。"
       },
       "send_original": {
         "type": "bool",
@@ -81,32 +132,42 @@
         "item_type": "string",
         "default": [],
         "description": "屏蔽关键词",
-        "hint": "正文包含任一关键词时不推送，例如：推广、广告。"
+        "hint": "正文命中任一词时不推送。"
       },
       "whitelist_keywords": {
         "type": "list",
         "item_type": "string",
         "default": [],
-        "description": "必含关键词",
-        "hint": "填写后，只有正文包含任一关键词时才会推送。留空则不启用。"
+        "description": "白名单关键词",
+        "hint": "配置后，正文或话题命中任一关键词才会推送。"
+      },
+      "whitelist_match_topics": {
+        "type": "bool",
+        "default": true,
+        "description": "白名单匹配微博话题"
       }
     }
   },
   "screenshot_settings": {
     "type": "object",
     "description": "截图设置",
-    "hint": "截图作为额外附加内容，独立于微博图片和微博视频开关。",
+    "hint": "截图为附加内容，不影响正文和媒体推送。",
     "items": {
       "weibo_screenshot": {
         "type": "bool",
         "default": true,
         "description": "附加微博网页截图"
       },
+      "auto_install_playwright": {
+        "type": "bool",
+        "default": false,
+        "description": "自动安装 Playwright",
+        "hint": "开启后会在插件启动时尝试安装浏览器依赖。"
+      },
       "screenshot_full_page": {
         "type": "bool",
         "default": false,
-        "description": "截取完整长图",
-        "hint": "开启后截取整个网页，关闭则仅截取当前视口。"
+        "description": "截取完整长图"
       },
       "screenshot_width": {
         "type": "int",
@@ -122,26 +183,24 @@
         "type": "string",
         "default": "jpeg",
         "description": "截图格式",
-        "hint": "可选 jpeg 或 png。"
+        "hint": "支持 jpeg 或 png。"
       },
       "screenshot_quality": {
         "type": "int",
         "default": 80,
-        "description": "截图压缩质量",
-        "hint": "仅对 jpeg 有效，推荐保持默认值。"
+        "description": "截图质量（仅 jpeg）"
       },
       "screenshot_wait_time": {
         "type": "int",
         "default": 2000,
-        "description": "截图等待时间（毫秒）",
-        "hint": "截图前等待页面加载的时间，默认 2000。"
+        "description": "截图前等待时间（毫秒）"
       }
     }
   },
   "runtime_settings": {
     "type": "object",
-    "description": "运行设置",
-    "hint": "控制检查频率与请求间隔，建议保持默认值或小幅调整。",
+    "description": "运行参数",
+    "hint": "用于控制轮询节奏与请求节奏。",
     "items": {
       "check_interval": {
         "type": "int",
@@ -151,20 +210,50 @@
       "check_interval_jitter": {
         "type": "int",
         "default": 2,
-        "description": "检查间隔随机浮动（分钟）",
-        "hint": "实际检查间隔会在 [间隔-浮动, 间隔+浮动] 范围内随机选择。"
+        "description": "检查间隔随机浮动（分钟）"
       },
       "request_interval": {
         "type": "int",
         "default": 5,
-        "description": "账号请求间隔（秒）",
-        "hint": "多账号抓取时，每个账号之间的等待时间。"
+        "description": "账号请求间隔（秒）"
       },
       "request_interval_jitter": {
         "type": "int",
         "default": 1,
-        "description": "请求间隔随机浮动（秒）",
-        "hint": "设置为 0 则关闭随机浮动。"
+        "description": "请求间隔随机浮动（秒）"
+      },
+      "retry_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用失败重试队列"
+      },
+      "retry_max_attempts": {
+        "type": "int",
+        "default": 3,
+        "description": "最大发送尝试次数",
+        "hint": "包含首次发送，默认 3 次。"
+      },
+      "retry_base_delay": {
+        "type": "int",
+        "default": 2,
+        "description": "重试基础退避秒数",
+        "hint": "失败后按指数退避重试：2s、4s、8s..."
+      },
+      "retry_max_delay": {
+        "type": "int",
+        "default": 120,
+        "description": "重试最大退避秒数"
+      },
+      "retry_jitter": {
+        "type": "int",
+        "default": 1,
+        "description": "重试随机抖动秒数"
+      },
+      "retry_queue_max_size": {
+        "type": "int",
+        "default": 200,
+        "description": "重试队列容量",
+        "hint": "队列满时将丢弃新失败消息并记录日志。"
       }
     }
   }

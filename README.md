@@ -29,6 +29,14 @@ AstrBot 的微博动态监控与推送插件，支持订阅规则、关注列表
 4. 使用 `/weibo_verify` 验证 Cookie。
 5. 使用 `/weibo_check` 验证首轮推送。
 
+## 如何获取微博 Cookie
+
+1. 在电脑浏览器打开 [微博移动端官网](https://m.weibo.cn/) 并登录。
+2. 按 `F12` 打开开发者工具，切换到 `网络 (Network)` 选项卡。
+3. 刷新页面，在左侧列表中找到第一个 `m.weibo.cn` 的请求（或者任何一个 `getIndex` 请求）。
+4. 在右侧的 `请求标头 (Request Headers)` 中找到 `Cookie` 字段。
+5. 复制该字段的完整值，粘贴到插件设置的 `weibo_cookie` 中。
+
 ## 常用配置
 
 - `content_settings.merge_forward_send`: `false` 为分段发送，`true` 为合并转发。

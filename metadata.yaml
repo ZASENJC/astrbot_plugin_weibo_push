@@ -1,6 +1,6 @@
 name: astrbot_plugin_weibo_push
-display_name: 微博推送
-desc: 监控微博动态并支持关注列表自动同步、重试队列退避推送。
+display_name: 微博推送助手
+desc: AstrBot 的微博动态监控与推送插件，支持订阅规则、关注列表同步和关键词过滤。
 author: ZASENJC
 version: v2.1.1
 help_url: https://github.com/ZASENJC/astrbot_plugin_weibo_push/blob/main/README.md

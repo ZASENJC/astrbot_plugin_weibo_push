@@ -1107,7 +1107,7 @@ class Main(Star):
             if (not is_forward) and not send_original:
                 continue
 
-            text = self.clean_text(mblog.get("text", ""))
+            text = self._extract_post_text(mblog)
             if self._contains_any_keyword(text, filter_keywords):
                 continue
 
@@ -1228,6 +1228,35 @@ class Main(Star):
                 video_url = media.get("stream_url_hd") or media.get("stream_url")
 
         return image_urls, video_url
+
+    def _extract_post_text(self, mblog: Dict[str, Any]) -> str:
+        candidates = [mblog]
+        retweeted = mblog.get("retweeted_status")
+        if isinstance(retweeted, dict):
+            candidates.append(retweeted)
+
+        text_candidates: List[Any] = []
+        for candidate in candidates:
+            long_text = candidate.get("longText") or {}
+            page_info = candidate.get("page_info") or {}
+            text_candidates.extend(
+                [
+                    candidate.get("text"),
+                    candidate.get("raw_text"),
+                    long_text.get("longTextContent"),
+                    long_text.get("content"),
+                    page_info.get("content1"),
+                    page_info.get("content2"),
+                    page_info.get("title"),
+                ]
+            )
+
+        for raw_text in text_candidates:
+            cleaned = self.clean_text(raw_text)
+            if cleaned:
+                return cleaned
+
+        return ""
 
     def clean_text(self, text: Any) -> str:
         if text is None:
@@ -1416,7 +1445,7 @@ class Main(Star):
         topics = "、".join(f"#{topic}#" for topic in post.topics) if post.topics else "无"
         values = SafeFormatDict(
             name=post.username,
-            weibo=post.text,
+            weibo=post.text or "（无正文）",
             link=post.link,
             topics=topics,
         )

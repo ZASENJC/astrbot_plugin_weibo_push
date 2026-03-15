@@ -8,6 +8,9 @@
 
 ## 版本概览
 
+- `v2.1.4`: 完成主流程职责拆解，新增规则解析、重试调度、发送分发与缓存管理组件。
+- `v2.1.3`: 将网络请求与微博解析能力拆分为独立组件，降低 `Main` 类耦合度。
+- `v2.1.2`: 按审核建议移除运行时依赖安装，修复 JSON 类型假设并将微博文本清洗移入线程池。
 - `v2.1.1`: 按官方新建插件文档回归单文件结构，修复后台配置不显示问题。
 - `v2.1.0`: 新增分段发送 / 合并转发开关，新增失败重试队列与退避策略。
 - `v2.0.0`: 完成模块化重构，新增关注列表主动监控与话题白名单匹配。
@@ -23,11 +26,13 @@
 
 ## 快速开始
 
-1. 在插件配置中填写 `auth_settings.weibo_cookie`。
-2. 在目标会话发送 AstrBot 内置命令 `/sid` 获取会话 ID。
-3. 在 `monitoring_settings.subscription_rules` 中配置 `source` 和 `allowed_targets`。
-4. 使用 `/weibo_verify` 验证 Cookie。
-5. 使用 `/weibo_check` 验证首轮推送。
+1. 安装依赖：`pip install -r requirements.txt`。
+2. 如需网页截图功能，额外执行：`playwright install chromium`。
+3. 在插件配置中填写 `auth_settings.weibo_cookie`。
+4. 在目标会话发送 AstrBot 内置命令 `/sid` 获取会话 ID。
+5. 在 `monitoring_settings.subscription_rules` 中配置 `source` 和 `allowed_targets`。
+6. 使用 `/weibo_verify` 验证 Cookie。
+7. 使用 `/weibo_check` 验证首轮推送。
 
 ## 如何获取微博 Cookie
 

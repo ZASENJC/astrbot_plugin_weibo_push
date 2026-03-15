@@ -2,6 +2,36 @@
 
 仅记录独立发布后的版本更新。
 
+## v2.1.4 (2026-03-15)
+
+### Changed
+
+- 新增 `RetryManager`，将重试策略计算、入队与重试协程从 `Main` 中独立出来。
+- 新增 `MonitorRuleResolver`，将手动规则、自动关注规则、UID 解析等逻辑集中到规则组件。
+- 新增 `WeiboDeliveryService`，将推送构建、分发发送、媒体下载与截图逻辑独立为发送组件。
+- 新增 `MediaCacheManager`，集中管理缓存文件创建、活跃标记、延迟释放与过期清理。
+- `Main` 现在主要负责生命周期与流程编排，各能力通过委托调用。
+
+## v2.1.3 (2026-03-15)
+
+### Changed
+
+- 将微博请求与响应校验逻辑拆分到 `WeiboHttpClient`，`Main` 仅保留调度与编排职责。
+- 将微博正文/话题/媒体解析逻辑拆分到 `WeiboPostParser`，降低 `Main` 类职责密度。
+- `Main` 中相关方法改为委托调用，保持现有行为与外部接口不变。
+
+## v2.1.2 (2026-03-15)
+
+### Changed
+
+- 移除插件运行时自动安装 `playwright` / `chromium` 的逻辑，改为遵循 AstrBot 插件依赖规范，由 `requirements.txt` + 手动初始化方式管理依赖。
+- `_conf_schema.json` 删除 `auto_install_playwright` 配置项，并补充截图功能的手动安装提示。
+
+### Fixed
+
+- `_request_json` 增加 JSON 顶层类型校验，仅接受对象结构，避免异常返回导致 `.get()` 崩溃。
+- 微博正文解析流程改为通过 `asyncio.to_thread` 执行，降低 `BeautifulSoup` 解析对事件循环的阻塞影响。
+
 ## v2.1.1 (2026-03-15)
 
 ### Changed

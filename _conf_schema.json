@@ -155,18 +155,12 @@
   "screenshot_settings": {
     "type": "object",
     "description": "截图设置",
-    "hint": "截图为附加内容，不影响正文和媒体推送。",
+    "hint": "截图为附加内容，不影响正文和媒体推送。请先手动安装 playwright 并执行 playwright install chromium。",
     "items": {
       "weibo_screenshot": {
         "type": "bool",
         "default": true,
         "description": "附加微博网页截图"
-      },
-      "auto_install_playwright": {
-        "type": "bool",
-        "default": false,
-        "description": "自动安装 Playwright",
-        "hint": "开启后会在插件启动时尝试安装浏览器依赖。"
       },
       "screenshot_full_page": {
         "type": "bool",

@@ -31,7 +31,7 @@
 2. 如需网页截图功能，额外执行：`playwright install chromium`。
 3. 在插件配置中填写 `auth_settings.weibo_cookie`。
 4. 在目标会话发送 AstrBot 内置命令 `/sid` 获取会话 ID。
-5. 在 `monitoring_settings.subscription_rules` 中配置 `source` 和 `allowed_targets`。
+5. 在 `monitoring_settings.subscription_rules` 中配置 `source` 和 `allowed_targets`（`source` 支持逗号/换行配置多个微博主页）。
 6. 使用 `/weibo_verify` 验证 Cookie。
 7. 使用 `/weibo_check` 验证首轮推送。
 

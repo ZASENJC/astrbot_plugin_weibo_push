@@ -540,17 +540,18 @@ class MonitorRuleResolver:
             if not isinstance(item, dict):
                 continue
 
-            source = str(item.get("source", "")).strip()
-            if not source:
+            sources = self._parse_multi_value(item.get("source", ""))
+            if not sources:
                 continue
 
             targets = tuple(self._parse_multi_value(item.get("allowed_targets", "")))
-            uid = await self.parse_uid(source)
-            if not uid:
-                logger.warning(f"WeiboMonitor: 订阅规则无法解析 UID -> {source}")
-                continue
+            for source in sources:
+                uid = await self.parse_uid(source)
+                if not uid:
+                    logger.warning(f"WeiboMonitor: 订阅规则无法解析 UID -> {source}")
+                    continue
 
-            rules.append(MonitorRule(uid=uid, targets=targets, source=source))
+                rules.append(MonitorRule(uid=uid, targets=targets, source=source))
 
         return rules
 

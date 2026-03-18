@@ -21,17 +21,17 @@
         "type": "template_list",
         "default": [],
         "description": "手动订阅规则",
-        "hint": "每条规则监控一个微博账号，并指定允许接收推送的会话 ID。",
+        "hint": "每条规则可监控多个微博账号，并指定允许接收推送的会话 ID。",
         "templates": {
           "subscription_rule": {
             "name": "微博订阅规则",
-            "hint": "source 支持 UID、微博主页链接、/n/用户名链接。",
+            "hint": "source 支持 UID、微博主页链接、/n/用户名链接；支持逗号或换行配置多个。",
             "items": {
               "source": {
-                "type": "string",
+                "type": "text",
                 "default": "",
-                "description": "微博主页 / UID / 用户名",
-                "hint": "例如：1234567890 或 https://weibo.com/u/1234567890"
+                "description": "微博主页 / UID / 用户名（可多个）",
+                "hint": "例如：1234567890, https://weibo.com/u/1234567890（支持逗号或换行分隔）"
               },
               "allowed_targets": {
                 "type": "text",

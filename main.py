@@ -1657,6 +1657,41 @@ class Main(Star):
                 urls.append(url)
         return list(dict.fromkeys(urls))
 
+    def _normalize_targets_with_current_umo(
+        self,
+        targets: List[str],
+        current_umo: str,
+        current_session_id: str,
+    ) -> List[str]:
+        if not targets:
+            return []
+
+        current_umo = str(current_umo or "").strip()
+        current_session_id = str(current_session_id or "").strip()
+        umo_parts = current_umo.split(":") if current_umo else []
+
+        normalized_targets: List[str] = []
+        for target in targets:
+            target_text = str(target or "").strip()
+            if not target_text:
+                continue
+
+            if ":" in target_text:
+                normalized_targets.append(target_text)
+                continue
+
+            if current_umo and target_text == current_session_id:
+                normalized_targets.append(current_umo)
+                continue
+
+            if len(umo_parts) == 3:
+                normalized_targets.append(f"{umo_parts[0]}:{umo_parts[1]}:{target_text}")
+                continue
+
+            normalized_targets.append(target_text)
+
+        return list(dict.fromkeys(normalized_targets))
+
     def _extract_status_ref_from_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         parsed = urlparse(url)
         segments = [unquote(segment).strip() for segment in parsed.path.split("/") if segment.strip()]
@@ -1819,16 +1854,22 @@ class Main(Star):
         if not urls:
             return
 
+        current_umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
         current_session_id = str(
             getattr(getattr(event, "message_obj", None), "session_id", "")
             or (event.get_session_id() if hasattr(event, "get_session_id") else "")
             or ""
         )
-        if not current_session_id:
+        if not current_umo and not current_session_id:
             return
 
         configured_targets = self._parse_multi_value(passive_config.get("targets", ""))
-        targets = configured_targets or [current_session_id]
+        if configured_targets:
+            targets = self._normalize_targets_with_current_umo(configured_targets, current_umo, current_session_id)
+        else:
+            targets = [current_umo] if current_umo else []
+        if not targets:
+            return
 
         max_links = self._safe_int(
             passive_config.get("max_links_per_message", DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE),
@@ -1855,7 +1896,9 @@ class Main(Star):
 
         result = await self.delivery_service.send_new_posts(posts, targets, self.message_template)
         if result["posts_sent"] == 0:
-            logger.warning(f"WeiboMonitor: 被动链接解析发送失败 session={current_session_id}, targets={len(targets)}, urls={len(posts)}")
+            logger.warning(
+                f"WeiboMonitor: 被动链接解析发送失败 umo={current_umo or current_session_id}, targets={len(targets)}, urls={len(posts)}"
+            )
 
     async def terminate(self):
         self.running = False

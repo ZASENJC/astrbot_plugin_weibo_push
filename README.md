@@ -51,7 +51,7 @@
 - `content_settings.merge_forward_send`: `false` 为分段发送，`true` 为合并转发。
 - `content_settings.whitelist_match_topics`: 白名单是否匹配微博话题。
 - `monitoring_settings.passive_link_recognition.enabled`: 是否启用会话内被动微博链接识别。
-- `monitoring_settings.passive_link_recognition.targets`: 被动解析结果的推送目标；留空时回当前会话。
+- `monitoring_settings.passive_link_recognition.targets`: 被动解析结果的推送目标，建议填写 `/sid` 获取到的完整会话 ID；留空时回当前会话。
 - `monitoring_settings.passive_link_recognition.max_links_per_message`: 单条消息最多解析多少个微博链接。
 - `monitoring_settings.auto_following.enabled`: 是否启用关注列表自动同步。
 - `monitoring_settings.auto_following.targets`: 自动监控与关注变更通知共用的推送目标。

@@ -8,6 +8,7 @@
 
 ## 版本概览
 
+- `v2.1.6`: 新增被动微博链接识别，可在会话中自动解析微博链接并回推内容到当前会话。
 - `v2.1.5`: 高危指令改为仅机器人主人可用，修复截图异常分支显式回收，并移除 Main 中冗余代理方法。
 - `v2.1.4`: 完成主流程职责拆解，新增规则解析、重试调度、发送分发与缓存管理组件。
 - `v2.1.3`: 将网络请求与微博解析能力拆分为独立组件，降低 `Main` 类耦合度。
@@ -19,6 +20,7 @@
 ## 功能
 
 - 多微博账号监控与定向会话推送
+- 会话内被动识别微博链接并解析回推
 - 关注列表自动同步监控
 - 白名单支持正文与话题匹配
 - 分段发送与合并转发两种推送模式
@@ -47,6 +49,8 @@
 
 - `content_settings.merge_forward_send`: `false` 为分段发送，`true` 为合并转发。
 - `content_settings.whitelist_match_topics`: 白名单是否匹配微博话题。
+- `monitoring_settings.passive_link_recognition.enabled`: 是否启用会话内被动微博链接识别。
+- `monitoring_settings.passive_link_recognition.max_links_per_message`: 单条消息最多解析多少个微博链接。
 - `monitoring_settings.auto_following_enabled`: 是否启用关注列表自动同步。
 - `runtime_settings.retry_enabled`: 是否启用失败重试队列。
 - `runtime_settings.retry_max_attempts`: 最大发送尝试次数，包含首次发送。

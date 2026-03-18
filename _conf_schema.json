@@ -43,6 +43,30 @@
           }
         }
       },
+      "passive_link_recognition": {
+        "type": "object",
+        "description": "被动链接识别",
+        "hint": "识别会话中发送的微博链接，并将解析结果回推到当前会话。",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用被动识别微博链接"
+          },
+          "ignore_commands": {
+            "type": "bool",
+            "default": true,
+            "description": "忽略命令消息中的链接",
+            "hint": "开启后，以 / 开头的消息不会触发被动解析。"
+          },
+          "max_links_per_message": {
+            "type": "int",
+            "default": 1,
+            "description": "单条消息最多解析链接数",
+            "hint": "超出数量时仅处理前 N 个链接，避免刷屏。"
+          }
+        }
+      },
       "auto_following_enabled": {
         "type": "bool",
         "default": false,

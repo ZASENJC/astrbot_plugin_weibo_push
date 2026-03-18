@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from astrbot.api import logger
@@ -34,6 +34,7 @@ WEIBO_API_BASE = "https://m.weibo.cn/api/container/getIndex"
 WEIBO_MOBILE_BASE = "https://m.weibo.cn"
 WEIBO_WEB_BASE = "https://weibo.com"
 WEIBO_CONFIG_API = "https://m.weibo.cn/api/config"
+WEIBO_STATUS_API = f"{WEIBO_MOBILE_BASE}/statuses/show"
 
 SUPPORTED_CONFIG_ROOT_KEYS = {
     "auth_settings",
@@ -47,12 +48,17 @@ UID_IN_URL_PATTERN = re.compile(r"(?:weibo|m\.weibo)\.(?:com|cn)/(?:u|profile)/(
 TOPIC_PATTERN = re.compile(r"#([^#]{1,80})#")
 SCHEME_UID_PATTERN = re.compile(r"(?:uid=|/u/)(\d+)")
 MBLOG_UID_PATTERN = re.compile(r"/(\d+)/")
+WEIBO_URL_PATTERN = re.compile(r"https?://[^\s<>'\"）】]+")
+WEIBO_STATUS_ID_IN_HTML_PATTERN = re.compile(r'"(?:status_id|mid)"\s*:\s*"?(\d{8,})"?')
+WEIBO_STATUS_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
+WEIBO_SHORT_HOSTS = {"t.cn"}
 RESERVED_PATH_SEGMENTS = {"p", "u", "profile", "n", "status", "detail", "api"}
 FOLLOWING_CONTAINER_TEMPLATES = (
     "231051_-_followers_-_{uid}",
     "231051_-_follow_-_{uid}",
     "231093_-_selffollowed",
 )
+DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE = 1
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,13 @@ class WeiboPostParser:
 
         return None
 
+    def extract_username(self, mblog: Dict[str, Any], default: str = "未知用户") -> str:
+        user = mblog.get("user") or {}
+        name = str(user.get("screen_name") or user.get("remark") or "").strip()
+        if name:
+            return name
+        return default
+
     def extract_topics(self, mblog: Dict[str, Any]) -> List[str]:
         topics: Set[str] = set()
         candidates = [mblog]
@@ -268,6 +281,32 @@ class WeiboPostParser:
                 return cleaned
 
         return ""
+
+    def build_post(self, mblog: Dict[str, Any], fallback_uid: str = "", default_username: str = "未知用户") -> Optional[WeiboPost]:
+        post_id = str(mblog.get("id") or "").strip()
+        bid = str(mblog.get("bid") or "").strip()
+        token = bid or post_id
+        if not token:
+            return None
+
+        post_uid = self.extract_uid_from_mblog(mblog) or fallback_uid
+        if not post_uid:
+            return None
+
+        if bid:
+            link = f"{WEIBO_WEB_BASE}/{post_uid}/{bid}"
+        else:
+            link = f"{WEIBO_MOBILE_BASE}/detail/{token}"
+
+        image_urls, video_url = self.extract_media(mblog)
+        return WeiboPost(
+            text=self.extract_post_text(mblog),
+            link=link,
+            username=self.extract_username(mblog, default=default_username),
+            image_urls=image_urls,
+            video_url=video_url,
+            topics=self.extract_topics(mblog),
+        )
 
     def clean_text(self, text: Any) -> str:
         if text is None:
@@ -1434,6 +1473,11 @@ class Main(Star):
         return self.config.get("runtime_settings", {}) or {}
 
     @property
+    def passive_link_config(self) -> Dict[str, Any]:
+        config = self.monitor_config.get("passive_link_recognition", {})
+        return config if isinstance(config, dict) else {}
+
+    @property
     def message_template(self) -> str:
         template = self.content_config.get("message_format", DEFAULT_MESSAGE_TEMPLATE)
         return str(template).replace("\\n", "\n")
@@ -1566,6 +1610,231 @@ class Main(Star):
         if not owner_id:
             return False
         return str(event.get_sender_id()) == owner_id
+
+    def _is_message_from_self(self, event: AstrMessageEvent) -> bool:
+        sender_id = str(event.get_sender_id()) if hasattr(event, "get_sender_id") else ""
+        self_id = str(getattr(getattr(event, "message_obj", None), "self_id", "") or "")
+        if not sender_id or not self_id:
+            return False
+        return sender_id == self_id
+
+    def _is_weibo_host(self, host: str) -> bool:
+        normalized = str(host or "").lower().split(":")[0]
+        if not normalized:
+            return False
+        return (
+            normalized in WEIBO_SHORT_HOSTS
+            or normalized == "weibo.com"
+            or normalized.endswith(".weibo.com")
+            or normalized == "weibo.cn"
+            or normalized.endswith(".weibo.cn")
+        )
+
+    def _extract_weibo_urls(self, text: str) -> List[str]:
+        urls: List[str] = []
+        for raw_url in WEIBO_URL_PATTERN.findall(text):
+            url = raw_url.rstrip(".,!?;:)]}>。，！？；：】）")
+            host = urlparse(url).netloc
+            if host and self._is_weibo_host(host):
+                urls.append(url)
+        return list(dict.fromkeys(urls))
+
+    def _extract_status_ref_from_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        parsed = urlparse(url)
+        segments = [unquote(segment).strip() for segment in parsed.path.split("/") if segment.strip()]
+        query = parse_qs(parsed.query)
+
+        uid: Optional[str] = None
+        token: Optional[str] = None
+
+        for key in ("id", "bid", "mid", "status_id"):
+            values = query.get(key) or []
+            if not values:
+                continue
+            candidate = str(values[0]).strip()
+            if candidate:
+                token = candidate
+                break
+
+        if segments:
+            if segments[0] in {"detail", "status"} and len(segments) >= 2:
+                token = token or segments[1]
+            elif segments[0] in {"u", "profile"} and len(segments) >= 3 and segments[1].isdigit():
+                uid = segments[1]
+                token = token or segments[2]
+            elif len(segments) >= 2 and segments[0] not in RESERVED_PATH_SEGMENTS:
+                if segments[0].isdigit():
+                    uid = segments[0]
+                token = token or segments[1]
+
+        token_text = str(token or "").strip()
+        if token_text and WEIBO_STATUS_TOKEN_PATTERN.fullmatch(token_text):
+            return uid, token_text
+        return uid, None
+
+    def _extract_status_id_from_html(self, html: str) -> Optional[str]:
+        match = WEIBO_STATUS_ID_IN_HTML_PATTERN.search(html)
+        if match:
+            return match.group(1)
+        return None
+
+    def _extract_mblog_from_status_payload(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        candidates: List[Any] = [payload, payload.get("data"), payload.get("status"), payload.get("card")]
+
+        data = payload.get("data")
+        if isinstance(data, dict):
+            candidates.extend([data.get("status"), data.get("mblog"), data.get("card")])
+            data_card = data.get("card")
+            if isinstance(data_card, dict):
+                candidates.append(data_card.get("mblog"))
+
+        card = payload.get("card")
+        if isinstance(card, dict):
+            candidates.append(card.get("mblog"))
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("id") is None and not candidate.get("bid"):
+                continue
+            if not isinstance(candidate.get("user"), dict):
+                continue
+            return candidate
+
+        return None
+
+    def _find_mblog_in_cards(self, cards: List[Dict[str, Any]], token: str) -> Optional[Dict[str, Any]]:
+        for card in cards:
+            if not isinstance(card, dict) or card.get("card_type") != 9:
+                continue
+
+            mblog = card.get("mblog")
+            if not isinstance(mblog, dict):
+                continue
+
+            if token in {str(mblog.get("id") or "").strip(), str(mblog.get("bid") or "").strip()}:
+                return mblog
+
+        return None
+
+    async def _resolve_status_page(self, url: str) -> Tuple[str, Optional[str]]:
+        try:
+            response = await self.client.get(url, headers=self.weibo_http.get_headers(""), follow_redirects=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            logger.warning(f"WeiboMonitor: 解析微博链接跳转失败 {url}: {err}")
+            return url, None
+
+        html: Optional[str] = None
+        content_type = str(response.headers.get("content-type", "")).lower()
+        if response.status_code == 200 and "text/html" in content_type:
+            html = response.text
+        return str(response.url), html
+
+    async def _fetch_status_mblog(self, token: str) -> Optional[Dict[str, Any]]:
+        payload = await self.weibo_http.request_json(f"{WEIBO_STATUS_API}?id={token}")
+        if not payload:
+            return None
+        return self._extract_mblog_from_status_payload(payload)
+
+    async def _resolve_weibo_post_from_url(self, url: str) -> Optional[WeiboPost]:
+        original_uid, original_token = self._extract_status_ref_from_url(url)
+        final_url, html = await self._resolve_status_page(url)
+        final_uid, final_token = self._extract_status_ref_from_url(final_url)
+        html_status_id = self._extract_status_id_from_html(html or "")
+
+        fallback_uid = final_uid or original_uid or ""
+        tokens: List[str] = []
+        for token in (final_token, original_token, html_status_id):
+            token_text = str(token or "").strip()
+            if token_text and token_text not in tokens:
+                tokens.append(token_text)
+
+        for token in tokens:
+            mblog = await self._fetch_status_mblog(token)
+            if not mblog:
+                continue
+
+            post = self.weibo_parser.build_post(mblog, fallback_uid=fallback_uid)
+            if post:
+                return post
+
+        if fallback_uid and tokens:
+            cards = await self._fetch_weibo_cards(fallback_uid)
+            if cards:
+                for token in tokens:
+                    mblog = self._find_mblog_in_cards(cards, token)
+                    if not mblog:
+                        continue
+
+                    post = self.weibo_parser.build_post(mblog, fallback_uid=fallback_uid)
+                    if post:
+                        return post
+
+        return None
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def passive_parse_weibo_link(self, event: AstrMessageEvent):
+        passive_config = self.passive_link_config
+        if not passive_config.get("enabled", True):
+            return
+
+        if not self.auth_config.get("weibo_cookie", ""):
+            return
+
+        if self._is_message_from_self(event):
+            return
+
+        message_str = str(
+            getattr(event, "message_str", "")
+            or getattr(getattr(event, "message_obj", None), "message_str", "")
+            or ""
+        ).strip()
+        if not message_str:
+            return
+
+        if bool(passive_config.get("ignore_commands", True)) and message_str.lstrip().startswith("/"):
+            return
+
+        urls = self._extract_weibo_urls(message_str)
+        if not urls:
+            return
+
+        session_id = str(
+            getattr(getattr(event, "message_obj", None), "session_id", "")
+            or (event.get_session_id() if hasattr(event, "get_session_id") else "")
+            or ""
+        )
+        if not session_id:
+            return
+
+        max_links = self._safe_int(
+            passive_config.get("max_links_per_message", DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE),
+            DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE,
+            min_value=1,
+            max_value=5,
+        )
+
+        posts: List[WeiboPost] = []
+        for url in urls[:max_links]:
+            try:
+                post = await self._resolve_weibo_post_from_url(url)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                logger.error(f"WeiboMonitor: 被动解析微博链接失败 {url}: {err}")
+                continue
+
+            if post is not None:
+                posts.append(post)
+
+        if not posts:
+            return
+
+        result = await self.delivery_service.send_new_posts(posts, [session_id], self.message_template)
+        if result["posts_sent"] == 0:
+            logger.warning(f"WeiboMonitor: 被动链接解析发送失败 session={session_id}, urls={len(posts)}")
 
     async def terminate(self):
         self.running = False
@@ -1903,24 +2172,10 @@ class Main(Star):
             if not self._passes_whitelist(text, topics, whitelist_keywords, whitelist_match_topics):
                 continue
 
-            bid = str(mblog.get("bid", "")).strip()
-            if not bid:
+            post = self.weibo_parser.build_post(mblog, fallback_uid=uid, default_username=username)
+            if post is None:
                 continue
-
-            post_uid = self.weibo_parser.extract_uid_from_mblog(mblog) or uid
-            link = f"{WEIBO_WEB_BASE}/{post_uid}/{bid}"
-
-            image_urls, video_url = self.weibo_parser.extract_media(mblog)
-            posts.append(
-                WeiboPost(
-                    text=text,
-                    link=link,
-                    username=username,
-                    image_urls=image_urls,
-                    video_url=video_url,
-                    topics=topics,
-                )
-            )
+            posts.append(post)
 
             if force_fetch:
                 break

@@ -2,6 +2,6 @@ name: astrbot_plugin_weibo_push
 display_name: 微博推送助手
 desc: 面向 AstrBot 的微博监控推送插件，支持多账号订阅、关注列表同步、被动微博链接解析、关键词过滤和图片/视频解析。
 author: ZASENJC
-version: 2.1.6
+version: 2.1.7
 help_url: https://github.com/ZASENJC/astrbot_plugin_weibo_push/blob/main/README.md
 repo: https://github.com/ZASENJC/astrbot_plugin_weibo_push

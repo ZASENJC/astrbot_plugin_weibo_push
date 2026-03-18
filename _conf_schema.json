@@ -15,7 +15,7 @@
   "monitoring_settings": {
     "type": "object",
     "description": "监控规则",
-    "hint": "支持手动订阅规则 + 自动同步关注列表两种模式，可同时启用。",
+    "hint": "支持手动订阅规则、被动链接识别、关注列表自动监控三种模式，可同时启用。",
     "items": {
       "subscription_rules": {
         "type": "template_list",
@@ -53,6 +53,12 @@
             "default": true,
             "description": "启用被动识别微博链接"
           },
+          "targets": {
+            "type": "text",
+            "default": "",
+            "description": "推送目标",
+            "hint": "支持英文逗号或换行分隔。留空时默认回推到当前会话。"
+          },
           "ignore_commands": {
             "type": "bool",
             "default": true,
@@ -67,50 +73,51 @@
           }
         }
       },
-      "auto_following_enabled": {
-        "type": "bool",
-        "default": false,
-        "description": "启用关注列表自动监控"
-      },
-      "auto_following_source": {
-        "type": "string",
-        "default": "",
-        "description": "关注列表来源账号",
-        "hint": "留空时使用当前 Cookie 登录账号；也支持 UID / 微博链接。"
-      },
-      "auto_following_targets": {
-        "type": "text",
-        "default": "",
-        "description": "自动监控推送目标",
-        "hint": "自动纳入监控的关注账号，统一推送到这些会话 ID。"
-      },
-      "auto_following_refresh_interval": {
-        "type": "int",
-        "default": 30,
-        "description": "关注列表刷新间隔（分钟）",
-        "hint": "为了效率，刷新间隔内会复用缓存列表。"
-      },
-      "auto_following_max_pages": {
-        "type": "int",
-        "default": 3,
-        "description": "关注列表抓取页数",
-        "hint": "每页约 20 个账号。页数越大，覆盖更多关注，但请求更频繁。"
-      },
-      "auto_following_remove_unfollowed": {
-        "type": "bool",
-        "default": false,
-        "description": "取消关注后停止监控"
-      },
-      "auto_following_notify_changes": {
-        "type": "bool",
-        "default": true,
-        "description": "推送关注列表变更通知"
-      },
-      "auto_following_notify_targets": {
-        "type": "text",
-        "default": "",
-        "description": "关注变更通知目标",
-        "hint": "留空时复用 auto_following_targets。"
+      "auto_following": {
+        "type": "object",
+        "description": "关注列表自动监控",
+        "hint": "自动同步指定账号的关注列表，并将新增账号纳入微博监控。",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "default": false,
+            "description": "启用关注列表自动监控"
+          },
+          "source": {
+            "type": "string",
+            "default": "",
+            "description": "关注列表来源账号",
+            "hint": "留空时使用当前 Cookie 登录账号；也支持 UID / 微博链接。"
+          },
+          "targets": {
+            "type": "text",
+            "default": "",
+            "description": "推送目标",
+            "hint": "自动纳入监控的关注账号，统一推送到这些会话 ID；关注变更通知也默认推送到这里。"
+          },
+          "refresh_interval": {
+            "type": "int",
+            "default": 30,
+            "description": "关注列表刷新间隔（分钟）",
+            "hint": "为了效率，刷新间隔内会复用缓存列表。"
+          },
+          "max_pages": {
+            "type": "int",
+            "default": 3,
+            "description": "关注列表抓取页数",
+            "hint": "每页约 20 个账号。页数越大，覆盖更多关注，但请求更频繁。"
+          },
+          "remove_unfollowed": {
+            "type": "bool",
+            "default": false,
+            "description": "取消关注后停止监控"
+          },
+          "notify_changes": {
+            "type": "bool",
+            "default": true,
+            "description": "推送关注列表变更通知"
+          }
+        }
       }
     }
   },

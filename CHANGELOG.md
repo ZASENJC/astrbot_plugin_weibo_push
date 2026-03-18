@@ -2,6 +2,14 @@
 
 仅记录独立发布后的版本更新。
 
+## v2.1.7 (2026-03-19)
+
+### Changed
+
+- `passive_link_recognition` 新增 `targets` 配置，支持填写多个会话 ID；留空时仍默认回推到当前会话。
+- “关注列表自动监控”改为 `monitoring_settings.auto_following` 子配置分组，统一收纳启用开关、来源账号、推送目标与刷新参数。
+- 关注列表变更通知不再单独配置目标，会默认推送到 `auto_following.targets`。
+
 ## v2.1.6 (2026-03-19)
 
 ### Added

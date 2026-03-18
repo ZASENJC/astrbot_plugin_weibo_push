@@ -8,6 +8,7 @@
 
 ## 版本概览
 
+- `v2.1.7`: “被动链接识别”新增可配置推送目标；“关注列表自动监控”收拢为监控规则下的独立子配置，并默认将变更通知发送到同一推送目标。
 - `v2.1.6`: 新增被动微博链接识别，可在会话中自动解析微博链接并回推内容到当前会话。
 - `v2.1.5`: 高危指令改为仅机器人主人可用，修复截图异常分支显式回收，并移除 Main 中冗余代理方法。
 - `v2.1.4`: 完成主流程职责拆解，新增规则解析、重试调度、发送分发与缓存管理组件。
@@ -50,8 +51,10 @@
 - `content_settings.merge_forward_send`: `false` 为分段发送，`true` 为合并转发。
 - `content_settings.whitelist_match_topics`: 白名单是否匹配微博话题。
 - `monitoring_settings.passive_link_recognition.enabled`: 是否启用会话内被动微博链接识别。
+- `monitoring_settings.passive_link_recognition.targets`: 被动解析结果的推送目标；留空时回当前会话。
 - `monitoring_settings.passive_link_recognition.max_links_per_message`: 单条消息最多解析多少个微博链接。
-- `monitoring_settings.auto_following_enabled`: 是否启用关注列表自动同步。
+- `monitoring_settings.auto_following.enabled`: 是否启用关注列表自动同步。
+- `monitoring_settings.auto_following.targets`: 自动监控与关注变更通知共用的推送目标。
 - `runtime_settings.retry_enabled`: 是否启用失败重试队列。
 - `runtime_settings.retry_max_attempts`: 最大发送尝试次数，包含首次发送。
 - `runtime_settings.retry_base_delay`、`retry_max_delay`、`retry_jitter`: 退避参数。

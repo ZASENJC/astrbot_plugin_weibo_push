@@ -542,6 +542,21 @@ class MonitorRuleResolver:
         self._get_headers = get_headers
         self._uid_cache = uid_cache
 
+    def _get_auto_following_config(self) -> Dict[str, Any]:
+        monitor_config = self._monitor_config_getter()
+        nested = monitor_config.get("auto_following", {})
+        nested = nested if isinstance(nested, dict) else {}
+
+        return {
+            "enabled": nested.get("enabled", monitor_config.get("auto_following_enabled", False)),
+            "source": nested.get("source", monitor_config.get("auto_following_source", "")),
+            "targets": nested.get("targets", monitor_config.get("auto_following_targets", "")),
+            "refresh_interval": nested.get("refresh_interval", monitor_config.get("auto_following_refresh_interval", 30)),
+            "max_pages": nested.get("max_pages", monitor_config.get("auto_following_max_pages", 3)),
+            "remove_unfollowed": nested.get("remove_unfollowed", monitor_config.get("auto_following_remove_unfollowed", False)),
+            "notify_changes": nested.get("notify_changes", monitor_config.get("auto_following_notify_changes", True)),
+        }
+
     async def resolve_monitor_rules(self, force_following_refresh: bool) -> List[MonitorRule]:
         manual_rules = await self.resolve_manual_rules()
         auto_rules = await self.resolve_auto_following_rules(force_following_refresh=force_following_refresh)
@@ -595,38 +610,35 @@ class MonitorRuleResolver:
         return rules
 
     async def resolve_auto_following_rules(self, force_following_refresh: bool) -> List[MonitorRule]:
-        monitor_config = self._monitor_config_getter()
-        if not monitor_config.get("auto_following_enabled", False):
+        auto_following_config = self._get_auto_following_config()
+        if not auto_following_config.get("enabled", False):
             return []
 
-        targets = self._parse_multi_value(monitor_config.get("auto_following_targets", ""))
+        targets = self._parse_multi_value(auto_following_config.get("targets", ""))
         if not targets:
-            logger.warning("WeiboMonitor: 已开启关注列表监控，但未配置 auto_following_targets")
+            logger.warning("WeiboMonitor: 已开启关注列表监控，但未配置 auto_following.targets")
             return []
 
-        source = str(monitor_config.get("auto_following_source", "")).strip()
+        source = str(auto_following_config.get("source", "")).strip()
         source_uid = await self.resolve_auto_following_source_uid(source)
         if not source_uid:
             logger.warning("WeiboMonitor: 无法确定关注列表来源 UID，已跳过自动关注监控")
             return []
 
         refresh_interval = self._safe_int(
-            monitor_config.get("auto_following_refresh_interval", 30),
+            auto_following_config.get("refresh_interval", 30),
             30,
             min_value=5,
             max_value=24 * 60,
         )
         max_pages = self._safe_int(
-            monitor_config.get("auto_following_max_pages", 3),
+            auto_following_config.get("max_pages", 3),
             3,
             min_value=1,
             max_value=20,
         )
-        remove_unfollowed = bool(monitor_config.get("auto_following_remove_unfollowed", False))
-        notify = bool(monitor_config.get("auto_following_notify_changes", True))
-        notify_targets = self._parse_multi_value(monitor_config.get("auto_following_notify_targets", ""))
-        if not notify_targets:
-            notify_targets = targets
+        remove_unfollowed = bool(auto_following_config.get("remove_unfollowed", False))
+        notify = bool(auto_following_config.get("notify_changes", True))
 
         snapshot_key = f"auto_following_snapshot_{source_uid}"
         history_key = f"auto_following_history_{source_uid}"
@@ -702,7 +714,7 @@ class MonitorRuleResolver:
         )
 
         if notify and (added or removed):
-            await self.notify_following_changes(source_uid, added, removed, name_map, notify_targets, len(effective_ids))
+            await self.notify_following_changes(source_uid, added, removed, name_map, targets, len(effective_ids))
 
         return [
             MonitorRule(uid=uid, targets=tuple(targets), source=f"following:{source_uid}", is_auto_following=True)
@@ -1475,7 +1487,13 @@ class Main(Star):
     @property
     def passive_link_config(self) -> Dict[str, Any]:
         config = self.monitor_config.get("passive_link_recognition", {})
-        return config if isinstance(config, dict) else {}
+        config = config if isinstance(config, dict) else {}
+        return {
+            "enabled": config.get("enabled", True),
+            "targets": config.get("targets", ""),
+            "ignore_commands": config.get("ignore_commands", True),
+            "max_links_per_message": config.get("max_links_per_message", DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE),
+        }
 
     @property
     def message_template(self) -> str:
@@ -1801,13 +1819,16 @@ class Main(Star):
         if not urls:
             return
 
-        session_id = str(
+        current_session_id = str(
             getattr(getattr(event, "message_obj", None), "session_id", "")
             or (event.get_session_id() if hasattr(event, "get_session_id") else "")
             or ""
         )
-        if not session_id:
+        if not current_session_id:
             return
+
+        configured_targets = self._parse_multi_value(passive_config.get("targets", ""))
+        targets = configured_targets or [current_session_id]
 
         max_links = self._safe_int(
             passive_config.get("max_links_per_message", DEFAULT_PASSIVE_LINK_MAX_PER_MESSAGE),
@@ -1832,9 +1853,9 @@ class Main(Star):
         if not posts:
             return
 
-        result = await self.delivery_service.send_new_posts(posts, [session_id], self.message_template)
+        result = await self.delivery_service.send_new_posts(posts, targets, self.message_template)
         if result["posts_sent"] == 0:
-            logger.warning(f"WeiboMonitor: 被动链接解析发送失败 session={session_id}, urls={len(posts)}")
+            logger.warning(f"WeiboMonitor: 被动链接解析发送失败 session={current_session_id}, targets={len(targets)}, urls={len(posts)}")
 
     async def terminate(self):
         self.running = False

@@ -67,6 +67,9 @@ class MonitorRule:
     targets: Tuple[str, ...]
     source: str
     is_auto_following: bool = False
+    filter_keywords: Tuple[str, ...] = ()
+    whitelist_keywords: Tuple[str, ...] = ()
+    whitelist_match_topics: bool = True
 
 
 @dataclass
@@ -91,6 +94,15 @@ class RetryTaskItem:
 class SafeFormatDict(dict):
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
+
+
+def _parse_keyword_list(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        values = [str(item).strip() for item in raw if str(item).strip()]
+        return list(dict.fromkeys(values))
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
 
 
 class WeiboHttpClient:
@@ -563,12 +575,21 @@ class MonitorRuleResolver:
 
         merged_targets: Dict[str, Set[str]] = {}
         merged_source: Dict[str, str] = {}
+        merged_filter_kws: Dict[str, Set[str]] = {}
+        merged_whitelist_kws: Dict[str, Set[str]] = {}
+        merged_match_topics: Dict[str, bool] = {}
 
         for rule in [*manual_rules, *auto_rules]:
             if not rule.targets:
                 continue
             merged_targets.setdefault(rule.uid, set()).update(rule.targets)
             merged_source.setdefault(rule.uid, rule.source)
+            if rule.filter_keywords:
+                merged_filter_kws.setdefault(rule.uid, set()).update(rule.filter_keywords)
+            if rule.whitelist_keywords:
+                merged_whitelist_kws.setdefault(rule.uid, set()).update(rule.whitelist_keywords)
+            if rule.uid not in merged_match_topics:
+                merged_match_topics[rule.uid] = rule.whitelist_match_topics
 
         merged_rules: List[MonitorRule] = []
         auto_rule_uids = {rule.uid for rule in auto_rules}
@@ -579,6 +600,9 @@ class MonitorRuleResolver:
                     targets=tuple(sorted(targets)),
                     source=merged_source.get(uid, uid),
                     is_auto_following=uid in auto_rule_uids,
+                    filter_keywords=tuple(sorted(merged_filter_kws.get(uid, set()))),
+                    whitelist_keywords=tuple(sorted(merged_whitelist_kws.get(uid, set()))),
+                    whitelist_match_topics=merged_match_topics.get(uid, True),
                 )
             )
 
@@ -599,13 +623,23 @@ class MonitorRuleResolver:
                 continue
 
             targets = tuple(self._parse_multi_value(item.get("allowed_targets", "")))
+            filter_kws = tuple(_parse_keyword_list(item.get("filter_keywords", [])))
+            whitelist_kws = tuple(_parse_keyword_list(item.get("whitelist_keywords", [])))
+            whitelist_match_topics = bool(item.get("whitelist_match_topics", True))
             for source in sources:
                 uid = await self.parse_uid(source)
                 if not uid:
                     logger.warning(f"WeiboMonitor: 订阅规则无法解析 UID -> {source}")
                     continue
 
-                rules.append(MonitorRule(uid=uid, targets=targets, source=source))
+                rules.append(MonitorRule(
+                    uid=uid,
+                    targets=targets,
+                    source=source,
+                    filter_keywords=filter_kws,
+                    whitelist_keywords=whitelist_kws,
+                    whitelist_match_topics=whitelist_match_topics,
+                ))
 
         return rules
 
@@ -1599,14 +1633,6 @@ class Main(Star):
         # 去重并保持顺序
         return list(dict.fromkeys(values))
 
-    def _parse_keyword_list(self, raw: Any) -> List[str]:
-        if isinstance(raw, list):
-            values = [str(item).strip() for item in raw if str(item).strip()]
-            return list(dict.fromkeys(values))
-        if isinstance(raw, str) and raw.strip():
-            return [raw.strip()]
-        return []
-
     def _pick_interval(self, base: int, jitter: int, minimum: int = 1) -> int:
         if jitter <= 0:
             return max(minimum, base)
@@ -2134,7 +2160,9 @@ class Main(Star):
             try:
                 posts = await self.check_weibo(rule.uid)
                 if posts:
-                    await self.delivery_service.send_new_posts(posts, list(rule.targets), self.message_template)
+                    filtered = self._filter_posts_for_rule(posts, rule)
+                    if filtered:
+                        await self.delivery_service.send_new_posts(filtered, list(rule.targets), self.message_template)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -2207,10 +2235,6 @@ class Main(Star):
     ) -> List[WeiboPost]:
         posts: List[WeiboPost] = []
 
-        filter_keywords = self._parse_keyword_list(self.content_config.get("filter_keywords", []))
-        whitelist_keywords = self._parse_keyword_list(self.content_config.get("whitelist_keywords", []))
-        whitelist_match_topics = bool(self.content_config.get("whitelist_match_topics", True))
-
         send_original = bool(self.content_config.get("send_original", True))
         send_forward = bool(self.content_config.get("send_forward", True))
 
@@ -2228,14 +2252,6 @@ class Main(Star):
             if (not is_forward) and not send_original:
                 continue
 
-            text = self.weibo_parser.extract_post_text(mblog)
-            if self._contains_any_keyword(text, filter_keywords):
-                continue
-
-            topics = self.weibo_parser.extract_topics(mblog)
-            if not self._passes_whitelist(text, topics, whitelist_keywords, whitelist_match_topics):
-                continue
-
             post = self.weibo_parser.build_post(mblog, fallback_uid=uid, default_username=username)
             if post is None:
                 continue
@@ -2245,6 +2261,19 @@ class Main(Star):
                 break
 
         return posts
+
+    def _filter_posts_for_rule(self, posts: List[WeiboPost], rule: MonitorRule) -> List[WeiboPost]:
+        if not rule.filter_keywords and not rule.whitelist_keywords:
+            return posts
+
+        filtered: List[WeiboPost] = []
+        for post in posts:
+            if self._contains_any_keyword(post.text, list(rule.filter_keywords)):
+                continue
+            if not self._passes_whitelist(post.text, post.topics, list(rule.whitelist_keywords), rule.whitelist_match_topics):
+                continue
+            filtered.append(post)
+        return filtered
 
     def _contains_any_keyword(self, text: str, keywords: List[str]) -> bool:
         return any(keyword and keyword in text for keyword in keywords)

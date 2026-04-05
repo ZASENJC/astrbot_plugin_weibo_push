@@ -2,6 +2,16 @@
 
 仅记录独立发布后的版本更新。
 
+## v2.1.8 (Unreleased)
+
+### Added
+
+- 订阅规则新增 `filter_keywords`、`whitelist_keywords`、`whitelist_match_topics` 字段，支持按规则（即按群/会话）独立配置黑名单和白名单关键词。
+
+### Changed
+
+- 关键词过滤从全局（`content_settings`）下沉到每条订阅规则，未配置关键词的规则不再过滤，全部推送。全局 `content_settings.filter_keywords` / `whitelist_keywords` 字段保留但不再参与过滤。
+
 ## v2.1.7 (2026-03-19)
 
 ### Changed

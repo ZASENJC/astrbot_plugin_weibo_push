@@ -38,6 +38,30 @@
                 "default": "",
                 "description": "允许接收推送的会话 ID",
                 "hint": "支持英文逗号或换行分隔。会话 ID 可通过 AstrBot 内置 /sid 获取。"
+              },
+              "filter_keywords": {
+                "type": "list",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "屏蔽关键词（仅对本条规则生效）",
+                "hint": "正文命中任一词时不推送。留空则不过滤。"
+              },
+              "whitelist_keywords": {
+                "type": "list",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "白名单关键词（仅对本条规则生效）",
+                "hint": "配置后，正文或话题命中任一关键词才会推送。留空则不做白名单过滤。"
+              },
+              "whitelist_match_topics": {
+                "type": "bool",
+                "default": true,
+                "description": "白名单匹配微博话题",
+                "hint": "开启后白名单关键词也会匹配微博话题文本。"
               }
             }
           }
